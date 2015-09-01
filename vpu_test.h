@@ -27,6 +27,7 @@
 
 #define COMMON_INIT
 #define DEMUXING
+#define MUXING
 
 
 extern int vpu_test_dbg_level;
@@ -71,11 +72,13 @@ typedef unsigned char u8;
 #define PATH_FILE	1
 #define PATH_NET	2
 #define PATH_IPU	3
+#define PATH_G2D	4
+
 
 /* Test operations */
 #define ENCODE		1
 #define DECODE		2
-#define LOOPBACK	3
+#define LOOPBACK		3
 #define TRANSCODE	4
 
 #define DEFAULT_PORT		5555
@@ -86,6 +89,10 @@ typedef unsigned char u8;
 
 #define TEST_BUFFER_NUM 5
 #define G2D_CACHEABLE    0
+
+#define INSTANCE_NUM 4
+#define H264BUFSIZE 128 * 1024
+
 
 
 enum {
@@ -150,6 +157,11 @@ struct vpu_display {
 	struct ipu_buf ipu_bufs[MAX_BUF_NUM];
 	int stopping;
 	int deinterlaced;
+
+	/*for display */
+	int display_left;
+	int display_top;
+	struct g2d_buf *g2d_buffers[TEST_BUFFER_NUM];
 };
 
 struct capture_testbuffer {
@@ -170,28 +182,28 @@ struct cmd_line {
 	char output[MAX_PATH];  /* Output file name */
 	int src_scheme;
 	int dst_scheme;
-	int video_node;
-	int video_node_capture;
-	int src_fd;
-	int dst_fd;
-	int width;
-	int height;
+	int video_node;//display device file name
+	int video_node_capture;//enc used ,input by -x 0
+	int src_fd;//input fd
+	int dst_fd;//output fd
+	int width;//dec width
+	int height;//dec  height
 	int enc_width;
 	int enc_height;
-	int loff;
-	int toff;
-	int format;
-	int deblock_en;
-	int dering_en;
-	int rot_en;
-	int ipu_rot_en;
-	int rot_angle;
+	int loff;//dec start dot x
+	int toff;//dec start dot y
+	int format;//enc (AVC) or dec(AVC) format,input by d 
+	int deblock_en;//input by d
+	int dering_en;//input by e
+	int rot_en;//input by  r m(set) u(clean)
+	int ipu_rot_en;//input by u
+	int rot_angle;//input by  r
 	int mirror;
 	int chromaInterleave;
-	int bitrate;
-	int gop;
+	int bitrate;//input by b
+	int gop;//i frame frequence
 	int save_enc_hdr;
-	int count;
+	int count;//frames
 	int prescan;
 	int bs_mode;
 	char *nbuf; /* network buffer */
@@ -200,17 +212,18 @@ struct cmd_line {
 	int seq_no; /* seq numbering to detect skipped frames */
 	u16 port; /* udp port number */
 	u16 complete; /* wait for the requested buf to be filled completely */
-	int iframe;
+	int iframe;//not use
 	int mp4_h264Class;
 	char vdi_motion;	/* VDI motion algorithm */
-	int fps;
+	int fps;//30
 	int mapType;
 	int quantParam;
-	int display_width;
-	int display_height;
-	int display_top;
-	int display_left;
-	int instns;
+	int display_width;//960
+	int display_height;//540
+	int display_top;//0
+	int display_left;//0
+	int instns;//add by zorro
+	int disp_mode;
 };
 
 struct decode {
@@ -311,13 +324,19 @@ struct instance_priv{
 	int vpu_waiting;
 	int vpu_running;
 
+	/*for muxing*/
 	sem_t sem_f;
-	char H264BUFA[54857600];   /*50MB*/
-	char H264BUFB[54857600];
+	char H264BUFA[5242880];/*5MB*///[54857600];   /*50MB*/
+	char H264BUFB[5242880];//[54857600];
 	int H264buff_flag;
 	int A_size;
 	int B_size;
 	int enc_end;
+
+	/*for demuxing*/
+	char H264buf[H264BUFSIZE];
+	char *H264head;
+	int H264len;
 };
 
 
@@ -344,6 +363,10 @@ int check_params(struct cmd_line *cmd, int op);
 char*skip_unwanted(char *ptr);
 int parse_options(char *buf, struct cmd_line *cmd, int *mode);
 
+struct vpu_display * g2d_display_open(struct decode *dec, int nframes, struct rot rotation, Rect cropRect);
+void g2d_display_close(struct vpu_display *disp);
+int g2d_put_data(struct decode *dec, int index);
+
 struct vpu_display *v4l_display_open(struct decode *dec, int nframes,
 					struct rot rotation, Rect rotCrop);
 int v4l_put_data(struct decode *dec, int index, int field, int fps);
@@ -364,7 +387,7 @@ int v4l_capture_setup(struct encode *enc, int width, int height, int fps);
 int v4l_get_capture_data(struct v4l2_buffer *buf, int instns);
 void v4l_put_capture_data(struct v4l2_buffer *buf, int instns);
 void v4l_deinterlace_capture_data(struct v4l2_buffer *buf, int instns);
-void v4l_render_capture_data(int index, int instns);
+void v4l_render_capture_data(struct encode *enc, int index);
 
 
 int encoder_open(struct encode *enc);

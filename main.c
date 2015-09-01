@@ -25,15 +25,7 @@
 #include <getopt.h>
 #include "vpu_test.h"
 
-#include "main.h"
-#include "dm.h" //for disk manager funtion
-#include "uart_com.h" 
-#include "key.h" //for key funtion
-
 #define ONE_FRAME_INTERV 100000 // 100 ms
-
-config_t g_config;
-
 
 char *usage = "Usage: ./mxc_vpu_test.out -D \"<decode options>\" "\
 	       "-E \"<encode options>\" "\
@@ -205,18 +197,25 @@ char *usage = "Usage: ./mxc_vpu_test.out -D \"<decode options>\" "\
 	       "\n"\
 	       "config file - Use config file for specifying options \n";
 
+struct input_argument {
+	int mode;
+	pthread_t tid;
+	char line[256];
+	struct cmd_line cmd;
+};
 
 sigset_t sigset;
 int quitflag;
 
-struct input_argument input_arg[MAX_NUM_INSTANCE];
+static struct input_argument input_arg[MAX_NUM_INSTANCE];
 static int instance;
-static int using_config_file;//if the param give is error it will be set 
+static int using_config_file;
 
 int vpu_test_dbg_level;
 
 int decode_test(void *arg);
 int encode_test(void *arg);
+int encdec_test(void *arg);
 int transcode_test(void *arg);
 
 /* Encode or Decode or Loopback */
@@ -492,229 +491,30 @@ signal_thread(void *arg)
 	return 0;
 }
 
-//
-int m_enc_thread(void *arg)
-{
-	int num=1;
-	int i;
-	int ret_thr;
-	vfile_p  vfileptmp;
-	int err;
-	int ret;
-	config_p argtmp=(struct config *)arg;
-	while(1)
-	{
-			if(argtmp!=NULL)
-			argtmp->EncWatch=0;
-			err = vpu_Init(NULL);
-			if (err) {
-				err_msg("VPU Init Failure.\n");
-				return -1;
-			}
-		if(DMCreateID(0,0,&g_vfilelist))
-			break;//can not allocate enough space
-		if(quitflag)break;
-		printf("test g_config.chs %d\n",g_config.chs);
-		for(i=0;i<num;i++)
-		{
-			//shagnwei add
-			printf("before file name is %s \n",input_arg[i].cmd.output);
-			vfileptmp=(vfile_p)malloc(sizeof(vfile_t)*1);
-			strcpy(vfileptmp->path,VideoPath);
-			strcpy(vfileptmp->name,g_vfilelist.CurID);
-			sprintf(vfileptmp->name,"%s%s%d%s",vfileptmp->name,"_D",i,".mp4");
-			
-			sprintf(input_arg[i].cmd.output,"%s/%s" , vfileptmp->path,vfileptmp->name);
-			printf("after file name is %s \n",input_arg[i].cmd.output);
-			if (check_params(&input_arg[i].cmd, input_arg[i].mode) == 0) {
-				
-				input_arg[i].cmd.instns= i;		//add by zorro
-				if (open_files(&input_arg[i].cmd) == 0) {
-					
-					if (input_arg[i].mode == DECODE) {
-						ret = decode_test(&input_arg[i].cmd);
-						
-						printf("decode_test thread %d.\n",i );
-					}
-					else if (input_arg[i].mode == ENCODE) {
-		
-						//shagnwei add
-						printf("confirm file name is %s \n",input_arg[i].cmd.output);
-						
-						//ret = encode_test(&input_arg[0].cmd);
-						//ret=m_enc_thread(ppargv,4)
-						
-						err=pthread_create(&input_arg[i].tid,
-						  NULL,
-						  (void *)&encode_test,
-						  (void *)&input_arg[i].cmd);
-						
-
-						
-						printf("encode_test %d thread return .\n",i, err);
-						//DMAddVfile(&g_vfilelist, vfileptmp);
-						if(g_config.lockvfileflag)
-						{
-							printf("emergent lock\n");
-							DMLockFile(vfileptmp,g_vfilelist.lockpath);
-						}
-						if(ret) 
-						{
-							printf("encode_test err\n");
-							break;
-						}
-						//quitflag=0;
-						
-					}
-					else if (input_arg[i].mode == TRANSCODE) {
-											ret = transcode_test(&input_arg[0].cmd);
-					}
-		
-					//close_files(&input_arg[0].cmd);
-				} 
-				else {
-					ret = -1;
-				}
-			} else {
-				ret = -1;
-			}
-		}
-		//if (input_arg[i].mode == LOOPBACK) {
-		//	encdec_test(&input_arg[0].cmd);
-		//}
-		
-		for (i = 0; i < num; i++) {
-			if (input_arg[i].tid != 0) {
-				pthread_join(input_arg[i].tid, (void *)&ret_thr);				
-				printf("pthread_join %d return %d \n",i,ret_thr);
-				if (ret_thr)
-					ret = -1;
-				close_files(&input_arg[i].cmd);
-			}
-		}
-	
-#ifdef COMMON_INIT
-			vpu_UnInit();
-#endif
-		}
-
-}
-
-
-//
-int m_dec_thread(void *arg)
-{
-
-
-}
-
-int m_uart_thread(void * arg)
-{
-	return uart_thread(arg);
-}
-
-int m_key_thread(void * arg)
-{
-	return key_thread(arg);
-}
-
-int m_watch_thread(void * arg)
-{
-	config_p argtmp;
-	argtmp=(config_p)arg;
-	if (argtmp==NULL)
-	{
-		printf("m_watch_thread start fail\n");
-		return -1;
-	}	
-	printf("m_watch_thread startsuccess\n");
-	while(1)
-	{
-		argtmp->EncRestart =argtmp->EncWatch;//if EncRestart =1 means the enc thread was dump
-		if(argtmp->EncWatch==0) 
-		{
-			printf("m_watch_thread report normal\n");
-			argtmp->EncWatch=1;
-		}
-		sleep(60000);
-	}
-}
-
-
-void config_init(void)
-{
-	//g_config.args
-	g_config.fps=30;
-	g_config.encflag=1;
-	g_config.decflag=1;
-	g_config.pargv=input_arg;
-	g_config.max_channels=4;
-	g_config.chs=4;
-	g_config.EncWatch=0;
-	g_config.EncRestart=0;
-	instance=0;
-	
-}
-
-#define channel 4//no param
-#define pargc     3//no param
-
-
 int
 #ifdef _FSL_VTS_
-vputest_mainbkp(int argc, char *argv[])
+vputest_main(int argc, char *argv[])
 #else
-main_bkp(int argc, char *argv[])
+main(int argc, char *argv[])
 #endif
 {
-	int err, nargc, i, ret = 0,j;//j is no param
+	int err, nargc, i, ret = 0;
 	char *pargv[32] = {0}, *dbg_env;
 	pthread_t sigtid;
-	pthread_t uarttid;
-	pthread_t enctid;
-	pthread_t dectid;
-	pthread_t keytid;
 	vpu_versioninfo ver;
 	int ret_thr;
 
-	vfile_p vfileptmp;
-
-	//no param
-	char ***ppargv;
-	ppargv=(char ***)malloc(sizeof(char **)*channel);
-	for(i=0;i<channel;i++)
-	{
-		ppargv[i]=(char **)malloc(sizeof(char *)*pargc);
-		for(j=0;j<pargc;j++)
-		{
-			ppargv[i][j]=(char *)malloc(sizeof(char )*256);
-		}
-		strcpy(ppargv[i][0],*argv);
-		strcpy(ppargv[i][1],"-E");
-	}
-	strcpy(ppargv[0][2],"-x 0 -o enc0.mp4 -w 720 -h 480 -L 0 -T 0 -W 512 -H 384	-f 2 -a 30 -c 500");
-	strcpy(ppargv[1][2],"-x 1 -o enc1.mp4 -w 720 -h 480 -L 512 -T 0 -W 512 -H 384 -f 2 -a 30 -c 500 ");
-	strcpy(ppargv[2][2],"-x 2 -o enc2.mp4 -w 720 -h 480 -L 0 -T 384 -W 512 -H 384 -f 2 -a 30 -c 500");
-	strcpy(ppargv[3][2],"-x 3 -o enc3.mp4 -w 720 -h 480 -L 512 -T 384 -W 512 -H 384 -f	2 -a 30 -c 500");
-	//no param
-
-
+#ifndef COMMON_INIT
+	srand((unsigned)time(0));     // init seed of rand()
+#endif
 
 	dbg_env=getenv("VPU_TEST_DBG");
 	if (dbg_env)
 		vpu_test_dbg_level = atoi(dbg_env);
 	else
 		vpu_test_dbg_level = 0;
-	if(argc<2)
-	{
-		argc=3;//no param
-		err = parse_main_args(argc, ppargv[1]);//no param
-	}
-	else 
-	{
-		printf("use parm start \n");
-		err = parse_main_args(argc, argv);
-	}
+
+	err = parse_main_args(argc, argv);
 	if (err) {
 		goto usage;
 	}
@@ -730,9 +530,28 @@ main_bkp(int argc, char *argv[])
 	pthread_sigmask(SIG_BLOCK, &sigset, NULL);
 	pthread_create(&sigtid, NULL, (void *)&signal_thread, NULL);
 #endif
-	pthread_create(&uarttid, NULL, (void *)&m_uart_thread, NULL);	/*zorro 2015/07/06*/
+
 	framebuf_init();
 
+#ifdef COMMON_INIT
+	err = vpu_Init(NULL);
+	if (err) {
+		err_msg("VPU Init Failure.\n");
+		return -1;
+	}
+
+	err = vpu_GetVersionInfo(&ver);
+	if (err) {
+		err_msg("Cannot get version info, err:%d\n", err);
+		vpu_UnInit();
+		return -1;
+	}
+
+	info_msg("VPU firmware version: %d.%d.%d_r%d\n", ver.fw_major, ver.fw_minor,
+						ver.fw_release, ver.fw_code);
+	info_msg("VPU library version: %d.%d.%d\n", ver.lib_major, ver.lib_minor,
+						ver.lib_release);
+#else
 	// just to enable cpu_is_xx() to be used in command line parsing
 	err = vpu_Init(NULL);
 	if (err) {
@@ -742,189 +561,16 @@ main_bkp(int argc, char *argv[])
 
 	vpu_UnInit();
 
-
-	DMInit();
-
-	if (using_config_file == 0) {
-		get_arg(input_arg[0].line, &nargc, pargv);
-		err = parse_args(nargc, pargv, 0);
-		if (err) {
-			vpu_UnInit();
-			goto usage;
-		}
-	}
-
-	while(1)
-	{
-		err = vpu_Init(NULL);
-		if (err) {
-			err_msg("VPU Init Failure.\n");
-			return -1;
-		}
-	if(DMCreateID(0,0,&g_vfilelist))
-		break;//can not allocate enough space
-	if(quitflag)break;
-	//shagnwei add
-	printf("before file name is %s \n",input_arg[0].cmd.output);
-	vfileptmp=(vfile_p)malloc(sizeof(vfile_t)*1);
-	strcpy(vfileptmp->path,VideoPath);
-	strcpy(vfileptmp->name,g_vfilelist.CurID);
-	strcat(vfileptmp->name,"_F.h264");
-	
-	sprintf(input_arg[0].cmd.output,"%s/%s" , vfileptmp->path,vfileptmp->name);
-	printf("after file name is %s \n",input_arg[0].cmd.output);
-	if (check_params(&input_arg[0].cmd, input_arg[0].mode) == 0) {
-		if (open_files(&input_arg[0].cmd) == 0) {
-			if (input_arg[0].mode == DECODE) {
-				ret = decode_test(&input_arg[0].cmd);
-			} else if (input_arg[0].mode == ENCODE) {
-
-				//shagnwei add
-				printf("confirm file name is %s \n",input_arg[0].cmd.output);
-				
-				ret = encode_test(&input_arg[0].cmd);
-				//ret=m_enc_thread(ppargv,4);
-				printf("encode_test return.\n");
-				DMAddVfile(&g_vfilelist, vfileptmp);
-				if(g_config.lockvfileflag)
-				{
-					DMLockFile(vfileptmp,g_vfilelist.lockpath);
-				}
-				if(ret) 
-				{
-					printf("encode_test err\n");
-					break;
-				}
-				//quitflag=0;
-				
-                            } else if (input_arg[0].mode == TRANSCODE) {
-                                    ret = transcode_test(&input_arg[0].cmd);
-			}
-
-			close_files(&input_arg[0].cmd);
-		} else {
-			ret = -1;
-		}
-	} else {
-		ret = -1;
-	}
-
-	if (input_arg[0].mode == LOOPBACK) {
-		encdec_test(&input_arg[0].cmd);
-	}
-
-
-
-#ifdef COMMON_INIT
-		vpu_UnInit();
 #endif
 
-	}
-
-
-
-	return ret;
-
-usage:
-	info_msg("\n%s", usage);
-	return -1;
-}
-
-
-
-
-//------shagnwei------//
-int main(int argc,char *argv[])
-	{
-		int err, nargc, i, ret = 0,j;//j is no param
-		char *pargv[32] = {0}, *dbg_env;
-		pthread_t sigtid;
-		pthread_t uarttid;
-		pthread_t enctid;
-		pthread_t dectid;
-		pthread_t keytid;
-		pthread_t watchtid;
-		vpu_versioninfo ver;
-		int xthreads;
-		int ret_thr;
-		vfile_p  vfileptmp;
-		int chs;
-		//no param
-		char ***ppargv;
-		ppargv=(char ***)malloc(sizeof(char **)*channel);
-		chs=channel;
-		printf("chs is	%d\n",chs);
-		for(i=0;i<chs;i++)
-		{
-			ppargv[i]=(char **)malloc(sizeof(char *)*pargc);
-			for(j=0;j<pargc;j++)
-			{
-				ppargv[i][j]=(char *)malloc(sizeof(char )*256);
-			}
-			strcpy(ppargv[i][0],*argv);
-			strcpy(ppargv[i][1],"-E");
-			printf("ppargv  %d\n",i);
-		}
-		if(argc==2)
-			xthreads=atoi(*argv);
-		if((xthreads<1) ||(xthreads>4))
-			xthreads=4;
-		printf("xthreads is %d.\n",xthreads);
-		if(chs-- >0){		
-		printf(" ppargv[0][2]\n");
-		strcpy(ppargv[0][2],"-x 0 -o enc0.mp4 -w 720 -h 480 -L 0 -T 0 -W 512 -H 384 -f 2 -a 30 -c 500");
-		}
-		if(chs-->0){
-			printf(" ppargv[1][2]\n");
-		strcpy(ppargv[1][2],"-x 1 -o enc1.mp4 -w 720 -h 480 -L 512 -T 0 -W 512 -H 384 -f 2 -a 30 -c 500 ");
-		}
-		if(chs-->0){
-			printf(" ppargv[2][2]\n");
-		strcpy(ppargv[2][2],"-x 2 -o enc2.mp4 -w 720 -h 480 -L 0 -T 384 -W 512 -H 384 -f 2 -a 30 -c 500");
-		}
-		if(chs-->0){		
-			printf(" ppargv[3][2]\n");
-		strcpy(ppargv[3][2],"-x 3 -o enc3.mp4 -w 720 -h 480 -L 512 -T 384 -W 512 -H 384 -f 2 -a 30 -c 500");
-		}
-		//no param
-		dbg_env=getenv("VPU_TEST_DBG");
-		if (dbg_env)
-			vpu_test_dbg_level = atoi(dbg_env);
-		else
-			vpu_test_dbg_level = 0;
-	
-		info_msg("VPU test program built on %s %s\n", __DATE__, __TIME__);
-		framebuf_init();
-	
-		// just to enable cpu_is_xx() to be used in command line parsing
-		err = vpu_Init(NULL);
-		if (err) {
-			err_msg("VPU Init Failure.\n");
-			return -1;
-		}
-	
-		vpu_UnInit();
-	
-	
-		DMInit();
-		chs=channel;
-		argc=3;//no param
-		for(i=0;i<chs;i++)
-		{
-			err = parse_main_args(argc, ppargv[i]);//no param
-			printf(" parse_main_args %d\n",i);
-			if (err) {
-				goto usage;
-			}
-
-			if (!instance) {
-				goto usage;
-			}
-		}
-		for(i=0;i<chs;i++)
-		{
+	if (instance > 1) {
+		for (i = 0; i < instance; i++) {
+#ifndef COMMON_INIT
+			/* sleep roughly a frame interval to test multi-thread race
+			   especially vpu_Init/vpu_UnInit */
+			usleep((int)(rand()%ONE_FRAME_INTERV));
+#endif
 			if (using_config_file == 0) {
-				printf(" input_arg[%d]is  %s\n",i,input_arg[i].line);
 				get_arg(input_arg[i].line, &nargc, pargv);
 				err = parse_args(nargc, pargv, i);
 				if (err) {
@@ -932,43 +578,81 @@ int main(int argc,char *argv[])
 					goto usage;
 				}
 			}
-		}
 
-		sigemptyset(&sigset);
-		sigaddset(&sigset, SIGINT);
-		pthread_sigmask(SIG_BLOCK, &sigset, NULL);
-		pthread_create(&sigtid, NULL, (void *)&signal_thread, NULL);
-		pthread_create(&uarttid, NULL, (void *)&m_uart_thread, NULL);	/*zorro 2015/07/06*/
-		pthread_create(&keytid, NULL, (void *)&m_key_thread, NULL);	
-		pthread_create(&watchtid, NULL, (void *)&m_watch_thread, &g_config);
-
-		pthread_create(&dectid, NULL, (void *)&m_dec_thread, NULL);
-
-		pthread_create(&enctid, NULL, (void *)&m_enc_thread, &g_config);
-		
-		while(1)
-		{
-			if(g_config.EncRestart){
-				printf("enc thread dump! restarting... \n");
-				pthread_kill(enctid,SIGKILL);
-				g_config.EncRestart=0;
-				g_config.EncWatch=0;
-				pthread_create(&enctid, NULL, (void *)&m_enc_thread, &g_config);
+			if (check_params(&input_arg[i].cmd,
+						input_arg[i].mode) == 0) {
+						input_arg[i].cmd.instns = i;
+				if (open_files(&input_arg[i].cmd) == 0) {
+					if (input_arg[i].mode == DECODE) {
+					     pthread_create(&input_arg[i].tid,
+						   NULL,
+						   (void *)&decode_test,
+						   (void *)&input_arg[i].cmd);
+					} else if (input_arg[i].mode ==
+							ENCODE) {
+					     pthread_create(&input_arg[i].tid,
+						   NULL,
+						   (void *)&encode_test,
+						   (void *)&input_arg[i].cmd);
+					}
+				}
 			}
-	
+
 		}
-	
-	
-	
-		return ret;
-		//release ppargv
-	usage:
-		info_msg("\n%s", usage);
-		return -1;
+	} else {
+		if (using_config_file == 0) {
+			get_arg(input_arg[0].line, &nargc, pargv);
+			err = parse_args(nargc, pargv, 0);
+			if (err) {
+				vpu_UnInit();
+				goto usage;
+			}
+		}
+
+		if (check_params(&input_arg[0].cmd, input_arg[0].mode) == 0) {
+			input_arg[0].cmd.instns = 0;
+			if (open_files(&input_arg[0].cmd) == 0) {
+				if (input_arg[0].mode == DECODE) {
+					ret = decode_test(&input_arg[0].cmd);
+				} else if (input_arg[0].mode == ENCODE) {
+					ret = encode_test(&input_arg[0].cmd);
+                                } else if (input_arg[0].mode == TRANSCODE) {
+                                        ret = transcode_test(&input_arg[0].cmd);
+				}
+
+				close_files(&input_arg[0].cmd);
+			} else {
+				ret = -1;
+			}
+		} else {
+			ret = -1;
+		}
+
+		if (input_arg[0].mode == LOOPBACK) {
+			encdec_test(&input_arg[0].cmd);
+		}
+	}
+
+	if (instance > 1) {
+		for (i = 0; i < instance; i++) {
+			if (input_arg[i].tid != 0) {
+				pthread_join(input_arg[i].tid, (void *)&ret_thr);
+				if (ret_thr)
+					ret = -1;
+				close_files(&input_arg[i].cmd);
+			}
+		}
+	}
+
+#ifdef COMMON_INIT
+	vpu_UnInit();
+#endif
+	return ret;
+
+usage:
+	info_msg("\n%s", usage);
+	return -1;
 }
-
-//------shagnwei------//
-
 
 #ifdef _FSL_VTS_
 #include "dut_api_vts.h"

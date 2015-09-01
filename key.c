@@ -26,12 +26,16 @@ static struct input_event event;
 *Author: zorro
 *Date :6/1/2015
 *======================================*/
+
 int
 key_thread(void *arg)
 {
 	int  rc;
 	int fd = 0;
 	int enable_record=0;
+	int *argtmp;
+	argtmp=arg;
+	//int e,d;
 
 	 /*open the /dev/input/event of key*/  
 	 if ((fd = open(DEV_PATH, O_RDONLY, 0)) < 0) {
@@ -42,7 +46,7 @@ key_thread(void *arg)
          /*read the key event*/  
         while ((rc = read(fd, &event, sizeof(event))) > 0) {
 	              printf("key enent :  %-24.24s.%06lu type 0x%04x; code 0x%04x;"
-			" value 0x%08x ;\n", 
+			" value 0x%08x ;\n\n", 
                       	ctime(&event.time.tv_sec),
                        	event.time.tv_usec,
                        	event.type, event.code, event.value);
@@ -57,8 +61,59 @@ key_thread(void *arg)
                                event.code & 0xff,
                                event.value ? "press" : "release");
 
-			if ((event.code & 0xff) == 0x0073)
-		          enable_record += (int)event.value;	/*Even number represents Enable, odd number Disable*/
+/*
+			  e=*argtmp/10;
+			  d=*argtmp%10;
+			if ((event.code & 0xff) == 0x0073)//115 key value(vol up)
+			{
+				if(event.value==0)//release
+				{
+					if (e)//10 bit
+					{
+						*argtmp=*argtmp-10;
+					}
+					else
+					{
+						*argtmp=*argtmp+10;
+					}
+					printf("enc mode change to %d\n",*argtmp);
+				}
+			}
+			if ((event.code & 0xff) == 0x0072)//114 key value(vol dn)
+			{
+				if(event.value==0)//release
+				{					
+					if (d)// 1 bit
+					{
+						*argtmp=*argtmp-1;
+					}
+					else
+					{
+						*argtmp=*argtmp+1;
+					}
+					printf("dec mode change to %d\n",*argtmp);
+				}
+			}
+			*/
+
+			if ((event.code & 0xff) == 0x0072)//114 key value(vol dn)
+			{
+				if(event.value==0)//release
+				{					
+					if (*argtmp==1)// 1 bit
+					{
+						printf("dec mode change to enc:%d\n",*argtmp);
+						*argtmp=10;
+					}
+					else
+					{
+						printf("enc mode change to dec :%d\n",*argtmp);
+						*argtmp=1;
+					}
+				}
+			}
+
+			// enable_record += (int)event.value;	/*Even number represents Enable, odd number Disable*/
                     }
                 }
             }
@@ -68,13 +123,11 @@ key_thread(void *arg)
 	return 0;
 }
 
-
+//
 #if _INDEPENDENT_
 int main(int argc, char *argv[])
 {
-	key_thread(argv[0]);
+	key_thread(argv[1]);
 }
 #endif
 
-
-/*-------end of file-------*/

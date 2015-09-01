@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "vpu_test.h"
+#include "g2d.h"
 
 extern int quitflag;
 #ifdef _FSL_VTS_
@@ -971,7 +972,7 @@ decoder_start(struct decode *dec)
 	char *delay_ms, *endptr;
 	int mjpgReadChunk = 0;
 
-	if (((dec->cmdl->dst_scheme == PATH_V4L2) || (dec->cmdl->dst_scheme == PATH_IPU))
+	if (((dec->cmdl->dst_scheme == PATH_V4L2) || (dec->cmdl->dst_scheme == PATH_IPU) ||(dec->cmdl->dst_scheme == PATH_G2D))
 			&& (dec->cmdl->ipu_rot_en))
 		rot_en = 0;
 
@@ -1036,7 +1037,7 @@ decoder_start(struct decode *dec)
 		deblock_fb = &fb[dblkid];
 	}
 
-	if ((dec->cmdl->dst_scheme == PATH_V4L2) || (dec->cmdl->dst_scheme == PATH_IPU)) {
+	if ((dec->cmdl->dst_scheme == PATH_V4L2) || (dec->cmdl->dst_scheme == PATH_IPU) ||(dec->cmdl->dst_scheme == PATH_G2D)) {
 		img_size = dec->stride * dec->picheight;
 	} else {
 		img_size = dec->picwidth * dec->picheight * 3 / 2;
@@ -1219,6 +1220,7 @@ decoder_start(struct decode *dec)
 		 * until timeout, so we yield schedule each frame explicitly.
 		 * This may be kernel dependant and may be removed on customer platform */
 		usleep(0);
+		
 
 		if ((dec->cmdl->format == STD_MJPG) &&
 		    (outinfo.indexFrameDisplay == 0)) {
@@ -1476,7 +1478,7 @@ decoder_start(struct decode *dec)
 		else
 			actual_display_index = outinfo.indexFrameDisplay;
 
-		if ((dec->cmdl->dst_scheme == PATH_V4L2) || (dec->cmdl->dst_scheme == PATH_IPU)) {
+		if ((dec->cmdl->dst_scheme == PATH_V4L2) || (dec->cmdl->dst_scheme == PATH_IPU) ||(dec->cmdl->dst_scheme == PATH_G2D)) {
 			if (deblock_en) {
 				deblock_fb->bufY =
 					disp->buffers[disp->buf.index]->offset;
@@ -1488,18 +1490,22 @@ decoder_start(struct decode *dec)
 			if (!cpu_is_mx27())
 				if (dec->cmdl->dst_scheme == PATH_V4L2)
 					err = v4l_put_data(dec, actual_display_index, dec->decoded_field[actual_display_index], dec->cmdl->fps);
-				else
+				else if (dec->cmdl->dst_scheme == PATH_IPU)
 					err = ipu_put_data(disp, actual_display_index, dec->decoded_field[actual_display_index], dec->cmdl->fps);
+				else
+					err = g2d_put_data(dec, actual_display_index);
 			else
 				if (dec->cmdl->dst_scheme == PATH_V4L2)
 					err = v4l_put_data(dec, actual_display_index, V4L2_FIELD_ANY, dec->cmdl->fps);
-				else
+				else if (dec->cmdl->dst_scheme == PATH_IPU)
 					err = ipu_put_data(disp, actual_display_index, V4L2_FIELD_ANY, dec->cmdl->fps);
+				else
+					err = g2d_put_data(dec, actual_display_index);
 
 			if (err)
 				return -1;
 
-			if (dec->cmdl->dst_scheme == PATH_V4L2) {
+			if ((dec->cmdl->dst_scheme == PATH_V4L2)||(dec->cmdl->dst_scheme == PATH_G2D)) {
 				if (!vpu_v4l_performance_test) {
 					if (dec->cmdl->format != STD_MJPG && disp_clr_index >= 0) {
 						err = vpu_DecClrDispFlag(handle, disp_clr_index);
@@ -1564,7 +1570,7 @@ decoder_start(struct decode *dec)
 			usleep(strtol(delay_ms,&endptr, 10) * 1000);
 
 		if (decodefinish)
-			break;
+			break;	
 	}
 
 	if (totalNumofErrMbs) {
@@ -1791,7 +1797,7 @@ decoder_allocate_framebuffer(struct decode *dec)
 		}
 	}
 
-	if ((dst_scheme == PATH_V4L2) || (dst_scheme == PATH_IPU)) {
+	if ((dst_scheme == PATH_V4L2) || (dst_scheme == PATH_IPU) ||(dst_scheme == PATH_G2D)) {
 		rotation.rot_en = dec->cmdl->rot_en;
 		rotation.rot_angle = dec->cmdl->rot_angle;
 
@@ -1803,13 +1809,17 @@ decoder_allocate_framebuffer(struct decode *dec)
 			swapCropRect(dec, &rotCrop);
 			if (dst_scheme == PATH_V4L2)
 				disp = v4l_display_open(dec, totalfb, rotation, rotCrop);
-			else
+			else if (dst_scheme == PATH_IPU)
 				disp = ipu_display_open(dec, totalfb, rotation, rotCrop);
+			else
+				disp = g2d_display_open(dec, totalfb, rotation, rotCrop);  /*zorro*/
 		} else
 			if (dst_scheme == PATH_V4L2)
 				disp = v4l_display_open(dec, totalfb, rotation, dec->picCropRect);
-			else
+			else if (dst_scheme == PATH_IPU)
 				disp = ipu_display_open(dec, totalfb, rotation, dec->picCropRect);
+			else
+				disp = g2d_display_open(dec, totalfb, rotation, dec->picCropRect);  /*zorro*/
 
 		if (disp == NULL) {
 			goto err;
@@ -1829,28 +1839,35 @@ decoder_allocate_framebuffer(struct decode *dec)
 			for (i = 0; i < totalfb; i++) {
 				fb[i].myIndex = i;
 
-                if (dec->cmdl->mapType == LINEAR_FRAME_MAP) {
-                    if (dst_scheme == PATH_V4L2)
-                        fb[i].bufY = disp->buffers[i]->offset;
-                    else
-                        fb[i].bufY = disp->ipu_bufs[i].ipu_paddr;
-                    fb[i].bufCb = fb[i].bufY + img_size;
-                    fb[i].bufCr = fb[i].bufCb + (img_size / divX / divY);
-                }
-                else if ((dec->cmdl->mapType == TILED_FRAME_MB_RASTER_MAP)
-                        ||(dec->cmdl->mapType == TILED_FIELD_MB_RASTER_MAP)){
-                    if (dst_scheme == PATH_V4L2)
-                        tiled_framebuf_base(&fb[i], disp->buffers[i]->offset,
-                                dec->stride, dec->picheight, dec->cmdl->mapType);
-                    else {
-                        fb[i].bufY = disp->ipu_bufs[i].ipu_paddr;
-                        fb[i].bufCb = fb[i].bufY + img_size;
-                        fb[i].bufCr = fb[i].bufCb + (img_size / divX / divY);
-                    }
-                } else {
-                    err_msg("undefined mapType = %d\n", dec->cmdl->mapType);
-                    goto err1;
-                }
+		if (dec->cmdl->mapType == LINEAR_FRAME_MAP) {
+			if (dst_scheme == PATH_V4L2)
+				fb[i].bufY = disp->buffers[i]->offset;
+			else if (dst_scheme == PATH_IPU)
+				fb[i].bufY = disp->ipu_bufs[i].ipu_paddr;
+			else
+				fb[i].bufY = disp->g2d_buffers[i]->buf_paddr;  /*zorro*/
+			fb[i].bufCb = fb[i].bufY + img_size;
+		  	fb[i].bufCr = fb[i].bufCb + (img_size / divX / divY);
+		}
+		else if ((dec->cmdl->mapType == TILED_FRAME_MB_RASTER_MAP)
+		    ||(dec->cmdl->mapType == TILED_FIELD_MB_RASTER_MAP)){
+			if (dst_scheme == PATH_V4L2)
+			   	tiled_framebuf_base(&fb[i], disp->buffers[i]->offset,
+			           dec->stride, dec->picheight, dec->cmdl->mapType);
+			else if  (dst_scheme == PATH_IPU){
+				fb[i].bufY = disp->ipu_bufs[i].ipu_paddr;
+				fb[i].bufCb = fb[i].bufY + img_size;
+				fb[i].bufCr = fb[i].bufCb + (img_size / divX / divY);
+			}
+			else{
+				fb[i].bufY = disp->g2d_buffers[i]->buf_paddr;  /*zorro*/
+				fb[i].bufCb = fb[i].bufY + img_size;
+			  	fb[i].bufCr = fb[i].bufCb + (img_size / divX / divY);
+			}
+		} else {
+		    err_msg("undefined mapType = %d\n", dec->cmdl->mapType);
+		    goto err1;
+		}
 
 				/* allocate MvCol buffer here */
 				if (!cpu_is_mx27()) {
@@ -1905,6 +1922,10 @@ err1:
 		dec->disp = NULL;
 	} else if (dst_scheme == PATH_IPU) {
 		ipu_display_close(disp);
+		dec->disp = NULL;
+	}else{
+		g2d_display_close(dec->cmdl->instns);
+		free(dec->disp);
 		dec->disp = NULL;
 	}
 

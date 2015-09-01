@@ -1,6 +1,6 @@
 TOOL_DIR =/opt/freescale/usr/local/gcc-4.6.2-glibc-2.13-linaro-multilib-2011.12/fsl-linaro-toolchain/bin
 CC=$(TOOL_DIR)/arm-none-linux-gnueabi-gcc
-PLATFORM_INC_DIR = /home/hh/ltib/rpm/BUILD/linux-3.0.35/include
+PLATFORM_INC_DIR = /home/hh/ltib/rpm/BUILD/linux-3.0.101/include
 IPU_INC_DIR = /home/hh/ltib/rpm/BUILD/imx-lib-3.0.35-4.1.0/ipu
 VPU_INC_DIR = /home/hh/ltib/rpm/BUILD/imx-vpu-lib-3.0.35-4.1.0
 FFMPEG_INC_DIR = /home/hh/ltib/rootfs/usr/include

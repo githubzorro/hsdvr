@@ -20,6 +20,9 @@
 #include "dm.h"
 
 
+#define FALSE 0
+#define TRUE 1
+
 //memset(cmd_buf, 0, BUFFER_SIZE);
 
 
@@ -30,9 +33,11 @@
 #define COM_TYPE GNR_COM
 
 #define SEL_FILE_NUM   	2
-#define BUFFER_SIZE	30	
+#define BUFFER_SIZE	40	
 #define TARGET_COM_PORT	4	/*USB1 - 2*/
 #define RECV_FILE_NAME          "/home/user/recv_file"
+#define TRAN_FILE_NAME          "/home/user/tran_file"
+
 #define TIME_DELAY      100	/*select wait 3 seconds*/
 
 /* The frame format is "start_byte,tx_id(tbd),cmd_len,cmd_id,data, check_sum"*/
@@ -53,13 +58,17 @@ static int msg_pack(unsigned char buff[], int rsp_msg_id, int msg_counter, unsig
 
 /*global variable----*/
 
-bool dvr_com = true;
-bool dvr_s = true;			/*DVR record*/
-bool gsr_s = true;			/* G-sensor */
-bool egy_s = true;			/*Emergency*/
+unsigned char dvr_com = FALSE;
+unsigned char dvr_s = FALSE;			/*DVR record*/
+unsigned char gsr_s = TRUE;			/* G-sensor */
+unsigned char egy_s = FALSE;			/*Emergency*/
 
-struct play_video play_v;
-struct reco_video reco_v = {1 ,FRONT_VIEW, 5, 0};
+struct play_video play_v = {0};
+struct reco_video reco_v = {0, ALL_VIEW, 5, 5*60*30, 0};
+
+unsigned char disp_mod = ALL_VIEW;
+unsigned char distortion = 0;
+
 
 unsigned short int lock_num = 4;
 unsigned short int total_num = 10;
@@ -68,14 +77,12 @@ unsigned short int total_num = 10;
 
 unsigned char rt_video = 0;
 
-/*private variable-----*/
-int video_num = 0;
-int rsp_cnt;
 
 unsigned char hw_version = 0x00;
 unsigned char sw_version = 0x00;
 
 
+int vcnt = 0;
 
 
 
@@ -292,6 +299,9 @@ msg_unpack(unsigned char buff[], int *rsp_cmd, unsigned char *errvalue)
 	int ret = 0;
 	msg_id = buff[3];
 	*rsp_cmd = msg_id+1;
+	if (msg_id != 0x32)
+		printf("\nzorro, unpack an msg, msg_id = %X, \n",msg_id);
+
 	switch (msg_id){
 		case 0:
 			printf("\nzorro, msg id  = 0, \n");
@@ -303,56 +313,73 @@ msg_unpack(unsigned char buff[], int *rsp_cmd, unsigned char *errvalue)
 			printf("\nzorro, msg id  = 2, \n");
 			break;
 		/*nothing to do with below msg id, only reply */
-		case 0x30:	
+		case 0x30:
+			if (buff[4] != 1)
+				dvr_com = 0;
+			else
+				dvr_com  = 1;
+			*errvalue = 0;
+			break;
 		case 0x32:
 		case 0x3C:
 		case 0x3E:
 			*errvalue = 0;
 			break;
 		case 0x34:	/*DA_REQ_RECORD_SET */
-			if (buff[4] = 1){
-				reco_v.reco_flg = true;
+			if (buff[4] == 1){
 				*errvalue = 0;
+				reco_v.reco_flg = TRUE;
 			}else{
-				*errvalue = 1;
-				reco_v.reco_flg = false;
+				*errvalue = 0;
+				reco_v.reco_flg = FALSE;
 			}
 			break;
 		case 0x36:
-			rsp_cnt = video_num = DMOpenList();
+			vcnt = DMOpenList();
 			*errvalue = 0;
 			break;
 		case 0x38:
-		{
+		{	
 			strncpy(play_v.play_nam, &buff[4], CTIME_SZIE);
 			if (DMCheckByName(play_v.play_nam) < 0){
-				*errvalue = -1;
+				*errvalue = 1;
+				printf("\nzorro, check video name error , \n");
 			}
-			play_v.play_flg = 1;
+			else{
+				play_v.play_flg = 1;
 
-			//replay_video(video_id);
-			*errvalue = 0;
-			printf("\nzorro, msg req replay video, replay video name   = %s, \n", play_v.play_nam);
+				//replay_video(video_id);
+				*errvalue = 0;
+				printf("\nzorro, msg req replay video, replay video name   = %s, \n", play_v.play_nam);
+			}
 		}
 			break;
 		case 0x3A:
 			//unsigned char control_type = buff[4];
 			//replay_control(buff[4])
+			if (buff[4] == 3)
+				play_v.play_flg = 0;		//stop replay video
 			*errvalue = 0;
 			printf("\nzorro, msg req video control, control type = %d, \n",  buff[4]);
 			break;
 		case 0x40:
 			*errvalue = 0;
-			if (buff[4] & 0x80){
-				reco_v.reco_prd=  (buff[4] & 0xEF);
+			//if (buff[4] & 0x80)
+				{
+				reco_v.reco_prd =  (buff[4] & 0xEF);
+				reco_v.reco_frm = reco_v.reco_prd*60*30;
 				printf("\nzorro, msg req set parameter, dvr period = %d, \n",  reco_v.reco_prd);
 			}
-			if (buff[5] & 0x80){
+			//if (buff[5] & 0x80)
+			{
 				char mode = (buff[5] & 0xEF);
-				if (mode <= 4)
+				if (mode <= 4){
 					reco_v.reco_mod = mode;
-				else
+				}
+				else{
+					reco_v.reco_mod = FRONT_VIEW;
 					*errvalue = 1;
+				}
 				printf("\nzorro, msg req set parameter, dvr mode = %d, \n",  mode);
 			}
 			break;
@@ -370,8 +397,66 @@ msg_unpack(unsigned char buff[], int *rsp_cmd, unsigned char *errvalue)
 			}
 			printf("\nzorro, msg req rt video, control type = %d, \n",  buff[4]);
 			break;
+		case 0x46:
+		{
+			strncpy(play_v.play_nam, &buff[4], CTIME_SZIE);
+			if (DMCheckByName(play_v.play_nam) < 0){
+				printf("\nzorro, msg req delete video, video donst exist \n");
+				*errvalue = 1;
+			}
+			else{
+				//DMDelFile(play_v.play_nam);
+				if (!DMDelFile(play_v.play_nam)){					
+					printf("\nzorro, msg req delete video success\n");
+					*errvalue = 0;
+				}
+				else{
+					*errvalue = 1;
+					printf("\nzorro, msg req delete video, delete video error\n");
+				}
+			}
+		}
+			break;
+		case 0x48:
+		{	
+			strncpy(play_v.play_nam, &buff[4], CTIME_SZIE);
+			if (DMCheckByName(play_v.play_nam) < 0){
+				*errvalue = 1;
+				printf("\nzorro, check video name error , \n");
+			}
+			else{
+				play_v.play_one = 1;
+				    play_v.play_flg= 1;
+
+				//replay_video(video_id);
+				*errvalue = 0;
+				printf("\nzorro, msg req replay video, replay video name   = %s, \n", play_v.play_nam);
+			}
+		}
+			break;
+		
+		case 0x4A:
+		{
+			disp_mod= buff[4];
+			if (disp_mod > 4){
+				disp_mod= ALL_VIEW;
+				*errvalue = 1;
+			}
+			printf("\nzorro, msg req display mode  = %d, \n",  disp_mod);
+		}
+		break;
+		case 0x4C:
+		{
+			distortion= buff[4];
+			if (distortion > 1){
+				distortion= 0;
+				*errvalue = 1;
+			}
+			printf("\nzorro, msg req distortion  = %d, \n",  distortion);
+		}
+		break;
 		default:
-			if ((msg_id < 0x30) ||(msg_id >0x44)||(msg_id%2)){
+			if ((msg_id < 0x30) ||(msg_id >0x4C)||(msg_id%2)){
 				ret = -1;
 			}
 			printf("\nzorro, msg id  = %d, \n", msg_id);
@@ -388,9 +473,9 @@ msg_unpack(unsigned char buff[], int *rsp_cmd, unsigned char *errvalue)
 *Created Date :6/18/2015
 *======================================*/   
 static int msg_pack(unsigned char buff[], int rsp_cmd, int cmd_counter, unsigned char errvalue, int *msg_len)
-{
-        	int check_sum, data_len;
-        	int i,j;
+{	
+    int check_sum, data_len;
+    int i,j;
 	int ret = 0;
 	char video[24];
 		
@@ -402,10 +487,13 @@ static int msg_pack(unsigned char buff[], int rsp_cmd, int cmd_counter, unsigned
 	{
 		case 0x31:
 			data_len = 0x03;
-			if (dvr_com == true)
+			/*if (dvr_com == TRUE)
 				buff[4] = 0x00;
 			else
 				buff[4] = 0x01;	
+				*/
+			buff[4] = 0x00;
+			printf("\nzorro,  dvr com normal \n");
 		break;
 		case 0x33:
 			data_len = 0x09;
@@ -421,23 +509,37 @@ static int msg_pack(unsigned char buff[], int rsp_cmd, int cmd_counter, unsigned
 		case 0x41:
 		case 0x43:
 		case 0x45:
+		case 0x47:
+		case 0x49:
+		case 0x4B:
+		case 0x4D:
 			data_len = 0x03;
 			buff[4] = errvalue;		
 		break;
 		case 0x37:
 		/*response one video name */
-		if (rsp_cnt > 0)
-		{	
-			if (DMReadList(video) < 0){
-				rsp_cnt = 0;
-				return -1;
+		{	if (vcnt > 0){
+					vcnt--;
+				if (DMReadList(video) < 0){ 	/*read failed*/
+					printf("zorro, DMReadList error\n");
+					return -1;	
+				}
+				else{						/*read successed*/
+					ret = 1;
+					data_len = 0x1A;
+					//time_t tv_sec = time(NULL);/* long */
+					//strncpy(&buff[4], ctime(&tv_sec), CTIME_SZIE);
+					strncpy(&buff[4], video, CTIME_SZIE);
+				}
 			}
-			rsp_cnt--;
-			ret = 1;
-			data_len = 0x1A;
-			//time_t tv_sec = time(NULL);/* long */
-			//strncpy(&buff[4], ctime(&tv_sec), CTIME_SZIE);
-			strncpy(&buff[4], video, CTIME_SZIE); 
+			else{
+					ret = 0;
+					data_len = 0x1A;
+					//time_t tv_sec = time(NULL);/* long */
+					//strncpy(&buff[4], ctime(&tv_sec), CTIME_SZIE);
+					memset(&buff[4], 0, CTIME_SZIE);
+				}
+		
 		}
 		break;
 		case 0x3D:
@@ -445,11 +547,12 @@ static int msg_pack(unsigned char buff[], int rsp_cmd, int cmd_counter, unsigned
 			data_len = 0x10;			
 			buff[4] = hw_version;
 			buff[5] = sw_version;
-			int available_disk = 8120;
-			int total_disk = 8120;
+			int available_disk = DMGetAvailable();
+			int total_disk = DMGetTotal();
 			*(unsigned int *)(&(buff[6])) = available_disk;
 			*(unsigned int *)(&(buff[10])) = total_disk;
 			*(unsigned int *)(&(buff[14])) =  time(NULL);
+			printf("msg_pack: avilable_disk = %d, total_disk = %d", available_disk,total_disk);
 		}
 		break;		
 		case 0x3F:	/* DVR_RSP_PARAMETERS */
@@ -472,6 +575,10 @@ static int msg_pack(unsigned char buff[], int rsp_cmd, int cmd_counter, unsigned
 	}
 
 	buff[data_len+2] = check_sum;
+
+	if (rsp_cmd != 0x33)
+		printf("zorro, msg_pack  rsp cmd = %X\n", rsp_cmd);
+	
 	return ret;
 }
 
@@ -530,18 +637,16 @@ static int check_frame_sum(unsigned char buff [ ],int data_len)
 		err = -1;
 	}
 	else{
-		for (i =0; i < (data_len - 1); i++){
+		for (i =0; i < data_len; i++){
 			xor_sum ^= buff[i];
 		}
-		
-		if (xor_sum == buff[data_len - 1]){
+		if (xor_sum == buff[data_len]){
 			err = 0;
 		}
 		else{
 			err = -1;
 		}
 	}
-
 	return err;
 }
 
@@ -552,12 +657,12 @@ static int check_frame_sum(unsigned char buff [ ],int data_len)
 *Author: zorro
 *Created Date :6/18/2015
 *======================================*/
-//int main(void) zorro
+//int main(void)
 int
 uart_thread(void *arg)
 {
 
-	int serial_fd, recv_fd, maxfd;	
+	int serial_fd, recv_fd, tran_fd;	
 
 	
 	fd_set inset, tmp_inset;
@@ -571,16 +676,27 @@ uart_thread(void *arg)
 	unsigned char data_t;
 	unsigned char errvalue;
 	int rcv_trans = 0;
+	int ret;
 	
 
 	/*The serial port data written to this file*/
-	if ((recv_fd = open(RECV_FILE_NAME, O_CREAT|O_WRONLY, 0644))  < 0){
+	/*if ((recv_fd = open(RECV_FILE_NAME, O_CREAT|O_WRONLY, 0644))  < 0){
 		perror("open");
 		printf("\n\n\nzorro, can't open recv_file: %s\n", strerror(errno));
 		return 1;
 	}
 	
 	printf("the recv_file fd = %d,\n", recv_fd);
+	*/
+	/*The transmit data written to this file*/
+	/*if ((tran_fd = open(TRAN_FILE_NAME, O_CREAT|O_WRONLY, 0644))  < 0){
+		perror("open");
+		printf("\n\n\nzorro, can't open tran_file: %s\n", strerror(errno));
+		return 1;
+	}
+	
+	printf("the tran_file fd = %d,\n", tran_fd);
+	*/
 
 	//fds[0] = STDIN_FILENO; /*The standard input*/
 
@@ -627,7 +743,7 @@ uart_thread(void *arg)
 						 }		  
 					 break;
 				 case 0x02: //DA_DECODE_GET_DATA_LENGTH				 
-					 if ((data_t < 2)  ||(data_t > 17))
+					 if ((data_t < 2)  ||(data_t > 40))
 					           step = 0;
 					else{
 						data_len = rcv_buf[2] = data_t;
@@ -640,8 +756,8 @@ uart_thread(void *arg)
 					if (i == data_len){
 						step = 0;	          //reset the unpack step
 						int check;
-						check = check_frame_sum(rcv_buf, (data_len+3));
-
+						check = check_frame_sum(rcv_buf, (data_len+2));
+					        	
 						if (!check){
 							if (msg_unpack(rcv_buf,&rsp_msg, &errvalue) < 0){
 								printf("zorro, ERROR:cmd unpack err\n");
@@ -649,10 +765,10 @@ uart_thread(void *arg)
 							else{
 								rcv_trans = 1;
 							}
-				
-							rcv_buf[data_len+3] = '\0';
+							
+							//rcv_buf[data_len+3] = '\0';
 							/*write the data to commen file*/
-							write(recv_fd, rcv_buf, data_len+3);
+							//write(recv_fd, rcv_buf, data_len+4); 
 						}
 						else if (check < 0){
 							printf("\nzorro, ERROR:check sum error \n");
@@ -664,16 +780,27 @@ uart_thread(void *arg)
 				 }
 		}
 		else{	/*transmit uart data */
+
+			ret = msg_pack(snd_buf,rsp_msg, rsp_counter, errvalue, &write_len);
+			/*ret > 0, send this frame and continue ; 
+			   ret = 0, send this frame and , 
+			   ret < 0, dont send this frame */
+			if (ret <= 0){
+				rcv_trans = 0;
+				if (ret < 0)
+					continue;
+			}
+
+			//snd_buf[write_len] = '\0';
+			/*write the data to commen file*/
+			//write(tran_fd, snd_buf, write_len+1);
 			
-			 if (msg_pack(snd_buf,rsp_msg, rsp_counter, errvalue, &write_len) <= 0){
-			 	rcv_trans = 0;
-			 }
 			 /*read frame head from serial port*/
 			real_write = write(serial_fd, &snd_buf, write_len);
 			if ((real_write <= 0) && (errno != EAGAIN)){
 				  printf("\nzorro, ERROR:write cmd error1 real_write = %d, \n", real_write);
 			}
-
+			
 			if ((write_len - real_write) != 0)
 				 printf("error!\n");
 			else

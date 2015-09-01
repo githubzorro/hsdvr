@@ -41,7 +41,6 @@ extern unsigned char *g_strInStream;
 #include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h"
 
-
 /* Our custom header */
 struct nethdr {
 	int seqno;
@@ -49,9 +48,11 @@ struct nethdr {
 	int len;
 };
 
+extern struct instance_priv ins_priv[];
+
 /*global variable, for demuxing -------*/
-AVPacket packet;
-AVFormatContext * pFormatCtx = NULL; 
+AVPacket packet[INSTANCE_NUM];
+AVFormatContext * pFormatCtx[INSTANCE_NUM] = {NULL}; 
 
 
 int	/* write n bytes to a file descriptor */
@@ -272,39 +273,40 @@ udp_send(struct cmd_line *cmd, int sd, char *buf, int n)
 *======================================*/
 /*int
 h264buff_read(char *buf, int n)*/
-#define H264BUFSIZE 128 * 1024
 #ifdef DEMUXING
 int
 vpu_read(struct cmd_line *cmd, char *buf, int n)
 {	
+	/* move to instance_priv for pthread
 	static char H264buf[H264BUFSIZE];
 	static char *H264head = H264buf;
 	static int H264len = 0;
+	*/
 	int rdn = 0, rdnn;
 	int sps_len;
 
 	//printf("zorro,vpu_read: read len = %d, h264len = %d\n", n, H264len);	/*n = 262144*/
-	if (H264len >= n){
-		memcpy(buf, H264head, n);
-		H264head+=n;
-		H264len -= n;
+	if (ins_priv[cmd->instns].H264len >= n){
+		memcpy(buf, ins_priv[cmd->instns].H264head, n);
+		ins_priv[cmd->instns].H264head+=n;
+		ins_priv[cmd->instns].H264len -= n;
 		rdn = n;
 	}
 	else{
-		memcpy(buf, H264head, H264len);
-		H264head = H264buf;
-		n -=H264len;
-		rdn = H264len;
-		H264len = 0;
-		if (av_read_frame(pFormatCtx, &packet) < 0){
-			av_free_packet(&packet);
-			printf("h264buff_read: av_read_frame error\n");
+		memcpy(buf, ins_priv[cmd->instns].H264head, ins_priv[cmd->instns].H264len);
+		ins_priv[cmd->instns].H264head = ins_priv[cmd->instns].H264buf;
+		n -=ins_priv[cmd->instns].H264len;
+		rdn = ins_priv[cmd->instns].H264len;
+		ins_priv[cmd->instns].H264len = 0;
+		if (av_read_frame(pFormatCtx[cmd->instns], &packet[cmd->instns]) < 0){
+			av_free_packet(&packet[cmd->instns]);
+			printf("h264buff_read: av_read_frame error, rdn = %d\n", rdn);
 			return rdn;
 		}
-		unsigned char *data = packet.data; 
-		int size = packet.size; 
+		unsigned char *data = packet[cmd->instns].data; 
+		int size = packet[cmd->instns].size; 
 
-		//printf("zorro,vpu_read: packet size = %d\n", size);
+		//printf("zorro,vpu_read: packet size = %d\n", size);  size pframe 4000,iframe 18000
 		/*check sps head-----*/
 		if ((data[4] & 0x1f) == 0x07){
 			sps_len = data[3];
@@ -320,13 +322,13 @@ vpu_read(struct cmd_line *cmd, char *buf, int n)
 		data[3] = 0x01;
 
 		if (size > H264BUFSIZE){
-			av_free_packet(&packet);
+			av_free_packet(&packet[cmd->instns]);
 			printf("h264buff_read: H264buf full\n");
 			return -1;
 		}
-		memcpy(H264buf, data, size);
-		H264len = size;
-		av_free_packet(&packet);
+		memcpy(ins_priv[cmd->instns].H264buf, data, size);
+		ins_priv[cmd->instns].H264len = size;
+		av_free_packet(&packet[cmd->instns]);
 
 		rdnn = vpu_read(cmd, &buf[rdn], n);
 		if (rdnn  < 0){
@@ -499,11 +501,13 @@ open_files(struct cmd_line *cmd)
 #ifdef DEMUXING
 		/*add by zorro, for demuxing mp4------------*/
 			av_register_all(); 
-			if (av_open_input_file(&pFormatCtx, cmd->input, NULL, 0, NULL) < 0){
+			if (av_open_input_file(&pFormatCtx[cmd->instns], cmd->input, NULL, 0, NULL) < 0){
 				printf("Open Input Error!\n");	
 					return -1;
 			} 
-			av_init_packet(&packet); 
+			av_init_packet(&packet[cmd->instns]);
+			/*init the H264head */
+			ins_priv[cmd->instns].H264head = ins_priv[cmd->instns].H264buf;
 #else
 		cmd->src_fd = open(cmd->input, O_RDONLY, 0);
 		if (cmd->src_fd < 0) {
@@ -573,7 +577,7 @@ close_files(struct cmd_line *cmd)
 
 #ifndef _FSL_VTS_
 	if ((cmd->dst_fd > 0)) {
-		close(cmd->dst_fd);
+		//close(cmd->dst_fd);
 		cmd->dst_fd = -1;
 	}
 #endif

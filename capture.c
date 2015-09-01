@@ -149,7 +149,7 @@ enum {
 
 //#define TEST_BUFFER_NUM 5	move to vpu_test.h 
 //#define G2D_CACHEABLE    0
-#define INSTANCE_NUM 4
+//#define INSTANCE_NUM 4
 
 struct instance_priv ins_priv[INSTANCE_NUM]  = {0};
 
@@ -692,7 +692,7 @@ void v4l_deinterlace_capture_data(struct v4l2_buffer *buf, int instns)
 	task.output.paddr = ins_priv[instns].g2d_buffers[buf->index]->buf_paddr;
 	if ((task.input.paddr != 0) && (task.output.paddr != 0)) {
 		if (ioctl(fd_ipu, IPU_QUEUE_TASK, &task) < 0) {
-			printf("IPU_QUEUE_TASK failed\n");
+			printf("IPU_QUEUE_TASK failed\n");		/*zorro err, some times, software pend this err when enc*/
 		}
 	}
 
@@ -706,7 +706,7 @@ void v4l_deinterlace_capture_data(struct v4l2_buffer *buf, int instns)
 //qiang_debug add end
 }
 
-void v4l_render_capture_data(int index, int instns)
+void v4l_render_capture_data(struct encode *enc, int index)
 {
 //qiang_debug add start
 /*
@@ -716,9 +716,12 @@ void v4l_render_capture_data(int index, int instns)
 	gettimeofday(&tv_start, 0);
 */
 //qiang_debug add end
+	int instns = enc->cmdl->instns;
 
-	draw_image_to_framebuffer(ins_priv[instns].g2d_buffers[index], g_in_width, g_in_height, g_g2d_fmt, &g_screen_info, ins_priv[instns].g_display_left, ins_priv[instns].g_display_top, g_display_width, g_display_height, 0, G2D_ROTATION_0);
-
+	if (enc->cmdl->disp_mode == 1)
+		draw_image_to_framebuffer(ins_priv[instns].g2d_buffers[index], g_in_width, g_in_height, g_g2d_fmt, &g_screen_info, ins_priv[instns].g_display_left, ins_priv[instns].g_display_top, g_display_width, g_display_height, 0, G2D_ROTATION_0);
+	else if (enc->cmdl->disp_mode == 2)
+		draw_image_to_framebuffer(ins_priv[instns].g2d_buffers[index], g_in_width, g_in_height, g_g2d_fmt, &g_screen_info, 0, 0, 1920, 1080, 0, G2D_ROTATION_0);
 //qiang_debug add start
 /*
 	gettimeofday(&tv_current, 0);

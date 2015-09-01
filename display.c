@@ -28,6 +28,8 @@
 #include "vpu_test.h"
 #include <linux/ipu.h>
 #include <linux/mxc_v4l2.h>
+#include "g2d.h"
+
 
 #define V4L2_MXC_ROTATE_NONE                    0
 #define V4L2_MXC_ROTATE_VERT_FLIP               1
@@ -37,6 +39,24 @@
 #define V4L2_MXC_ROTATE_90_RIGHT_VFLIP          5
 #define V4L2_MXC_ROTATE_90_RIGHT_HFLIP          6
 #define V4L2_MXC_ROTATE_90_LEFT                 7
+
+
+char d_fb_dev[100] = "/dev/fb0";
+int d_fd_fb = 0;
+
+int d_fb_phys;
+int d_fb_size;
+unsigned short * d_fb;
+
+int d_frame_size;
+int d_g2d_fmt = G2D_NV12;
+int d_in_width = 720;
+int d_in_height = 480;
+int d_display_width = 720;
+int d_display_height = 480;
+struct fb_var_screeninfo d_screen_info;
+int d_num_buffers = TEST_BUFFER_NUM;
+
 
 static __inline int queue_size(struct ipu_queue * q)
 {
@@ -442,7 +462,7 @@ int ipu_put_data(struct vpu_display *disp, int index, int field, int fps)
 		disp->deinterlaced = 1;
 	queue_buf(&(disp->ipu_q), index);
 	wakeup_queue();
-
+	printf("zorro, ipu_put_data ");
 	return 0;
 }
 
@@ -1066,5 +1086,258 @@ int v4l_put_data(struct decode *dec, int index, int field, int fps)
 
 err:
 	return -1;
+}
+
+
+static void draw_image_to_framebuffer(struct g2d_buf *buf, int img_width, int img_height, int img_format, 
+		 struct fb_var_screeninfo *screen_info, int left, int top, int to_width, int to_height, int set_alpha, int rotation)
+{
+	int i;
+	struct g2d_surface src,dst;
+	void *g2dHandle;
+
+	if ( ( (left+to_width) > (int)screen_info->xres ) || ( (top+to_height) > (int)screen_info->yres ) )  {
+		printf("Bad display image dimensions!\n");
+		return;
+	}
+
+#if CACHEABLE
+        g2d_cache_op(buf, G2D_CACHE_FLUSH);
+#endif
+
+	if(g2d_open(&g2dHandle) == -1 || g2dHandle == NULL) {
+		printf("Fail to open g2d device!\n");
+		g2d_free(buf);
+		return;
+	}
+
+/*
+	NOTE: in this example, all the test image data meet with the alignment requirement.
+	Thus, in your code, you need to pay attention on that.
+
+	Pixel buffer address alignment requirement,
+	RGB/BGR:  pixel data in planes [0] with 16bytes alignment,
+	NV12/NV16:  Y in planes [0], UV in planes [1], with 64bytes alignment,
+	I420:    Y in planes [0], U in planes [1], V in planes [2], with 64 bytes alignment,
+	YV12:  Y in planes [0], V in planes [1], U in planes [2], with 64 bytes alignment,
+	NV21/NV61:  Y in planes [0], VU in planes [1], with 64bytes alignment,
+	YUYV/YVYU/UYVY/VYUY:  in planes[0], buffer address is with 16bytes alignment.
+*/
+
+	src.format = img_format;
+	switch (src.format) {
+	case G2D_RGB565:
+	case G2D_RGBA8888:
+	case G2D_RGBX8888:
+	case G2D_BGRA8888:
+	case G2D_BGRX8888:
+	case G2D_BGR565:
+	case G2D_YUYV:
+	case G2D_UYVY:
+		src.planes[0] = buf->buf_paddr;
+		break;
+	case G2D_NV12:
+		src.planes[0] = buf->buf_paddr;
+		src.planes[1] = buf->buf_paddr + img_width * img_height;
+		break;
+	case G2D_I420:
+		src.planes[0] = buf->buf_paddr;
+		src.planes[1] = buf->buf_paddr + img_width * img_height;
+		src.planes[2] = src.planes[1]  + img_width * img_height / 4;
+		break;
+	case G2D_NV16:
+		src.planes[0] = buf->buf_paddr;
+		src.planes[1] = buf->buf_paddr + img_width * img_height;
+                break;
+	default:
+		printf("Unsupport image format in the example code\n");
+		return;
+	}
+
+	src.left = 0;
+	src.top = 0;
+	src.right = img_width;
+	src.bottom = img_height;
+	src.stride = img_width;
+	src.width  = img_width;
+	src.height = img_height;
+	src.rot  = G2D_ROTATION_0;
+
+	dst.planes[0] = d_fb_phys;
+	dst.left = left;
+	dst.top = top;
+	dst.right = left + to_width;
+	dst.bottom = top + to_height;
+	dst.stride = screen_info->xres;
+	dst.width  = screen_info->xres;
+	dst.height = screen_info->yres;
+	dst.rot    = rotation;
+	dst.format = screen_info->bits_per_pixel == 16 ? G2D_RGB565 : (screen_info->red.offset == 0 ? G2D_RGBA8888 : G2D_BGRA8888);
+
+	if (set_alpha)
+	{
+		src.blendfunc = G2D_ONE;
+		dst.blendfunc = G2D_ONE_MINUS_SRC_ALPHA;
+	
+		src.global_alpha = 0x80;
+		dst.global_alpha = 0xff;
+	
+		g2d_enable(g2dHandle, G2D_BLEND);
+		g2d_enable(g2dHandle, G2D_GLOBAL_ALPHA);
+	}
+
+	g2d_blit(g2dHandle, &src, &dst);
+	g2d_finish(g2dHandle);
+
+	if (set_alpha)
+	{
+		g2d_disable(g2dHandle, G2D_GLOBAL_ALPHA);
+		g2d_disable(g2dHandle, G2D_BLEND);
+	}
+
+	g2d_close(g2dHandle);
+}
+
+static int prepare_g2d(struct vpu_display *disp)
+{
+	int i;
+
+	for (i = 0; i < d_num_buffers; i++) {
+#if CACHEABLE
+		disp->g2d_buffers[i] = g2d_alloc(d_frame_size, 1);//alloc physical contiguous memory for source image data with cacheable attribute
+#else
+		disp->g2d_buffers[i] = g2d_alloc(d_frame_size, 0);//alloc physical contiguous memory for source image data
+#endif
+		if(!disp->g2d_buffers[i]) {
+			printf("Fail to allocate physical memory for image buffer!\n");
+			return -1;
+		}
+		printf("g2d_buffers[%d].buf_paddr = 0x%x.\r\n", i, disp->g2d_buffers[i]->buf_paddr);
+	}
+
+	return 0;
+}
+
+
+struct vpu_display *
+g2d_display_open(struct decode *dec, int nframes, struct rot rotation, Rect cropRect)
+{	
+	int instns = dec->cmdl->instns;
+	int disp_width = dec->cmdl->width;
+	int disp_height = dec->cmdl->height;
+	int disp_left =  dec->cmdl->loff;
+	int disp_top =  dec->cmdl->toff;
+
+	struct vpu_display *disp;
+	struct fb_fix_screeninfo fb_info;
+
+	if ((d_fd_fb = open(d_fb_dev, O_RDWR, 0)) < 0) {
+		printf("Unable to open %s\n", d_fb_dev);
+		goto err;
+	}
+	
+	/* Get fix screen info. */
+	if ((ioctl(d_fd_fb, FBIOGET_FSCREENINFO, &fb_info)) < 0) {
+		printf("%s FBIOGET_FSCREENINFO failed.\n", d_fb_dev);
+		goto err;
+	}
+	d_fb_phys = fb_info.smem_start;
+	
+	/* Get variable screen info. */
+	if ((ioctl(d_fd_fb, FBIOGET_VSCREENINFO, &d_screen_info)) < 0) {
+		printf("%s FBIOGET_VSCREENINFO failed.\n", d_fb_dev);
+		goto err;
+	}
+	
+	d_fb_phys += (d_screen_info.xres_virtual * d_screen_info.yoffset * d_screen_info.bits_per_pixel / 8);
+
+	d_fb_size = d_screen_info.xres_virtual * d_screen_info.yres_virtual * d_screen_info.bits_per_pixel / 8;
+
+	/* Map the device to memory*/
+	d_fb = (unsigned short *) mmap(0, d_fb_size, PROT_READ | PROT_WRITE, MAP_SHARED, d_fd_fb, 0);
+	if ((int)d_fb <= 0) {
+		printf("\nError: failed to map framebuffer device to memory.\n");
+		goto err;
+	}
+
+	disp = (struct vpu_display *)calloc(1, sizeof(struct vpu_display));
+       	if (disp == NULL) {
+		err_msg("falied to allocate vpu_display\n");
+		return NULL;
+	}
+	d_display_width = dec->cmdl->width;
+	d_display_height = dec->cmdl->height;
+	disp->display_top = dec->cmdl->toff;
+	disp->display_left = dec->cmdl->loff;
+	d_frame_size = dec->stride * dec->picheight * 2;
+	printf("g2d_display_open: display left = %d, top = %d, width = %d, height = %d.\r\n", disp->display_top, disp->display_left, d_display_width, d_display_height);
+
+
+
+	if (prepare_g2d(disp) < 0) {
+		printf("prepare_output failed\n");
+		goto err;;
+	}
+	disp->fd = d_fd_fb;
+	disp->nframes = nframes;
+
+	return disp;
+	
+err:
+	return NULL;
+
+}
+
+void
+g2d_display_close(struct vpu_display *disp)
+{
+	int i;
+
+	for (i = 0; i < d_num_buffers; i++)
+	{
+		g2d_free(disp->g2d_buffers[i]);
+	}
+
+	munmap(d_fb, d_fb_size);
+	close(d_fd_fb);
+}
+
+int g2d_put_data(struct decode *dec, int index)
+{
+	struct vpu_display *disp;
+	struct timeval tv_in;
+	static struct timeval tv_out = {0};
+	int usec, sec, slp_usec;
+
+	disp = dec->disp;
+
+	disp->buf.index = index;
+
+	gettimeofday(&tv_in, 0);
+	sec = tv_in.tv_sec - tv_out.tv_sec;
+	usec = tv_in.tv_usec - tv_out.tv_usec;
+	
+	slp_usec = (1000*1000/30 - usec - (sec * 1000000));
+	if (slp_usec > 0)
+		usleep(slp_usec);
+	gettimeofday(&tv_out, 0);
+	//printf("zorro, g2d_put_data  index = %d\n", index);
+	if (dec->cmdl->disp_mode == 1)
+		draw_image_to_framebuffer(disp->g2d_buffers[index], d_in_width, d_in_height, d_g2d_fmt, &d_screen_info, disp->display_left, disp->display_top, d_display_width, d_display_height, 0, G2D_ROTATION_0);
+	else if (dec->cmdl->disp_mode == 2)
+		draw_image_to_framebuffer(disp->g2d_buffers[index], d_in_width, d_in_height, d_g2d_fmt, &d_screen_info, 0, 0, 1920, 1080, 0, G2D_ROTATION_0);
+	//printf("zorro, g2d_put_data sleep usec = %d\n", slp_usec);
+
+
+//qiang_debug add start
+/*
+	gettimeofday(&tv_current, 0);
+	total_time = (tv_current.tv_sec - tv_start.tv_sec) * 1000000L;
+	total_time += tv_current.tv_usec - tv_start.tv_usec;
+	printf("g2d time = %u us\n", total_time);
+*/
+//qiang_debug add end
+
+	return 0;
 }
 

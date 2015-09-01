@@ -368,7 +368,7 @@ mux_thread(void *arg)
 	char *H264head;
 	int H264len;
 
-	unsigned char NALbuf[128 * 1024];
+	unsigned char NALbuf[512 * 1024];
 	int NAL_Len;
 	int read_len;
 	int NAL_type;
@@ -438,13 +438,14 @@ waitenc:
 
 		} /* end if (0 < NAL_Len) */
 
+		if (quitflag)
+		break;
 
 	}while(0 < NAL_Len);
-	printf("\nmuxing end\n");
 	CloseMp4(pFormatCtx);
 	ins_priv[instns].A_size = 0;
 	ins_priv[instns].B_size = 0;
-
+	printf("\nmuxing end\n");
 }
 
 /*==============h264buff_write================
@@ -459,20 +460,24 @@ h264buff_write(char *buf, int n, int instns)
 		//return -1;
 	
 	if (! ins_priv[instns].H264buff_flag){
-		if ( ins_priv[instns].A_size >= 41943040)
+		if ( ins_priv[instns].A_size >= 5000000){
 			printf("zorro,memory err ,out of H264BUFA range..\n" );
+			return -1;
+		}
 		memcpy((void *)(& ins_priv[instns].H264BUFA[ ins_priv[instns].A_size]), (void *)buf, n);
 		 ins_priv[instns].A_size+=n;
-		if ( ins_priv[instns].A_size >= 41943040){
+		if ( ins_priv[instns].A_size >= 5000000){
 			 ins_priv[instns].H264buff_flag = 1;
 			 sem_post(& ins_priv[instns].sem_f);
 		}
 	}else{
-		if (ins_priv[instns].B_size >= 41943040)
+		if (ins_priv[instns].B_size >= 5000000){
 			printf("zorro,memory err ,out of H264BUFB range..\n" );
+			return -1;
+		}
 		memcpy((void *)(& ins_priv[instns].H264BUFB[ ins_priv[instns].B_size]), (void *)buf, n);
 		 ins_priv[instns].B_size+=n;
-		if ( ins_priv[instns].B_size >= 41943040){
+		if ( ins_priv[instns].B_size >= 5000000){
 			 ins_priv[instns].H264buff_flag = 0;
 			sem_post(& ins_priv[instns].sem_f);
 		}
@@ -786,6 +791,7 @@ encoder_free_framebuffer(struct encode *enc)
 
 	free(enc->fb);
 	free(enc->pfbpool);
+	printf("zorro, encoder_free_framebuffer end.\n");
 }
 
 int
@@ -1228,6 +1234,7 @@ void encoder_thread(void *arg)
 		if (quitflag)
 			break;
 
+
 		if (enc->ringBufferEnable == 0) {
 			ret = enc_readbs_reset_buffer(enc, outinfo.bitstreamBuffer, outinfo.bitstreamSize);
 			if (ret < 0) {
@@ -1239,12 +1246,9 @@ void encoder_thread(void *arg)
 						virt_bsbuf_end, phy_bsbuf_start, 0);
 
 		frame_id++;
-		if ((count != 0) && (frame_id >= count)){
-			ins_priv[instns].H264buff_flag = !ins_priv[instns].H264buff_flag;
-			sem_post(&ins_priv[instns].sem_f);
-			ins_priv[instns].enc_end = 1;
+		if ((count != 0) && (frame_id >= count))
 			break;
-		}
+		
 	}
 
 	gettimeofday(&total_end, NULL);
@@ -1295,6 +1299,10 @@ err3:
 	info_msg("encoder_thread exit\n");
 	ins_priv[instns].vpu_running = 0;
 
+	ins_priv[instns].H264buff_flag = !ins_priv[instns].H264buff_flag;
+	ins_priv[instns].enc_end = 1;
+	sem_post(&ins_priv[instns].sem_f);
+
 	pthread_exit(0);  
 }  
 
@@ -1342,7 +1350,7 @@ encoder_start(struct encode *enc)
 			index = v4l2_buf.index;
 			v4l_deinterlace_capture_data(&v4l2_buf, instns);
 			v4l_put_capture_data(&v4l2_buf, instns);
-			v4l_render_capture_data(index, instns);
+			v4l_render_capture_data(enc, index);
 			queue_buf(&ins_priv[instns].vpu_q, index);
 			wakeup_queue(instns);
 
@@ -1365,8 +1373,8 @@ encoder_start(struct encode *enc)
 	pthread_mutex_destroy(&ins_priv[instns].vpu_mutex);
 	pthread_cond_destroy(&ins_priv[instns].vpu_cond);
 	pthread_join(mux_thread_id, NULL);
-	sem_destroy  (&ins_priv[instns].sem_f);
-
+	sem_destroy(&ins_priv[instns].sem_f);
+	
 err2:
 	if (src_scheme == PATH_V4L2) {
 		v4l_stop_capturing(enc->cmdl->instns);
@@ -1375,7 +1383,8 @@ err2:
 	/* For automation of test case */
 	if (ret > 0)
 		ret = 0;
-
+	ins_priv[instns].enc_end = 0;	/*zorro clear enc_end*/
+	printf("encode_start end, ret = %d\n",ret);
 	return ret;
 }
 
@@ -1844,6 +1853,7 @@ err:
 #ifndef COMMON_INIT
 	vpu_UnInit();
 #endif
+	printf("zorro, encode_test end.\n");
 	return ret;
 }
 

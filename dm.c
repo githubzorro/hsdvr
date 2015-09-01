@@ -198,8 +198,37 @@ printf(" \n");
 
 }
 
+//create a int id by given buf
+int DMatoi(const char * buf)
+{
+	return atoi(buf);
+}
 //int remove (const char * pathname)
 //int rename (const char * oldpath , const char *newpath)
+#if  1
+
+time_t DMTimeStr2Sec(char * buf)
+{
+	struct tm tmDate;
+	char tmpbuf[5]={0};
+	if(NULL==buf)return -1;
+	strncpy(tmpbuf,buf,4);//year
+	tmDate.tm_year=DMatoi( tmpbuf)-1970;
+	strncpy(tmpbuf,buf+4,2);//month
+	tmDate.tm_mon=DMatoi( tmpbuf);
+	strncpy(tmpbuf,buf+6,2);//day
+	tmDate.tm_mday=DMatoi( tmpbuf);
+	strncpy(tmpbuf,buf+8,2);//hour
+	tmDate.tm_hour=DMatoi( tmpbuf);
+	strncpy(tmpbuf,buf+10,2);//min
+	tmDate.tm_min=DMatoi( tmpbuf);
+	tmDate.tm_sec=0;
+	return mktime(&tmDate);
+}
+
+
+#endif
+
 
 //
 int DMGetTime(vfilelist_p vfilelistp)
@@ -235,7 +264,15 @@ int xrename(const char  * oldpath,const char * newpath)
 	return  rename( oldpath, newpath);
 }
 
-//
+//test ok
+int runshellcmd(unsigned char * cmd)
+{
+	//int ret;
+	//printf("runshellcmd : %s \n",cmd);
+	return system(cmd);
+}
+
+//no ok
 int DMCheckID(const int * ID)
 {
 	if((*ID>199000000000) &&(*ID<250000000000))
@@ -249,39 +286,47 @@ vfile_p DMSearch(vfilelist_p vfilelistp , const char * vfilename)
 	int i;
 	vfile_p tmpvfilep;
 	tmpvfilep=vfilelistp->vfilehead;
-	for(i=0;i<vfilelistp->num-1;i++)
+	for(i=0;i<vfilelistp->num-1;i++)//bug warning should not use num to control
 	{
 		tmpvfilep=tmpvfilep->next_vfile;
-		if(!strcmp(tmpvfilep->name,vfilename))
+		if(NULL==tmpvfilep) return NULL;
+		//printf("DMSearch filename is %s \n",tmpvfilep->name);
+		if(!strcmp(tmpvfilep->name,vfilename))//if tmpvfilep is NULL,it will be fault
 			return tmpvfilep;
 	}
-	return NULL;
+	return NULL;//file not exist
 
 }
 
 //test ok
-//bug:if the vfilep is the endest file it will be segmentation fault
+//bug 1:if the vfilep is the endest file it will be segmentation fault
+//bug 2:if the file not exist but the list is still in
+//bug 3:if a same file in the dir , cover it?
+//bug 4:if the vfile was the newest,should also update newestpos
 int static DMDeletevFile(vfile_p vfilep)
 {
 	char fullname[PATHSIZE+NAMESIZE];
 	
 	if(vfilep->lock)
-		return -1;
+		return -1;//whether we should unlock the file before del lock file
 	vfilep->pre_vfile->next_vfile=vfilep->next_vfile;	
 	if (vfilep->next_vfile!=NULL)//if the vfile is the tail of the list
 	vfilep->next_vfile->pre_vfile=vfilep->pre_vfile;
+	else
+		g_vfilelist.vfilenewest=vfilep->pre_vfile;//fix bug 4
 	memset(fullname,'\0',sizeof(fullname));
 	strcpy(fullname,vfilep->path);
 	strcat(fullname,"/");
 	strcat(fullname,vfilep->name);
 	xremove(fullname);
 	free(vfilep);
+	return 0;
 	//resorting file
 }
 
 
 //test ok extern
-int static DMunLockFile(vfile_p vfilep , char * vfilepath)
+int static DMunLockvFile(vfile_p vfilep , char * vfilepath)
 {
 	int i;
 	char vfileoldpath[PATHSIZE+NAMESIZE];
@@ -301,18 +346,20 @@ int static DMunLockFile(vfile_p vfilep , char * vfilepath)
 	strcat(vfileoldpath,vfilep->name);
 	strcat(vfilenewpath,vfilep->name);
 	xrename(vfileoldpath ,vfilenewpath);
-	vfilep->lock=0;	
+	vfilep->lock=0;
+	g_vfilelist.locknum--;
 	printf("DMunLockFile %s  unlock success\n",vfilep->name);
 	//update earliest vfile
 }
 
 
 //test ok extern
-int  DMLockFile(vfile_p vfilep,char * vfilelockpath)
+int  DMLockvFile(vfile_p vfilep,char * vfilelockpath)
 {
 	int ret;
 	char vfileoldpath[PATHSIZE+NAMESIZE];
 	char vfilenewpath[PATHSIZE+NAMESIZE];
+	if(NULL==vfilep)return -1;
 	if(vfilep->lock)//the vfile is already lock
 	{
 		printf("DMLockFile the vfile is already lock \n");
@@ -332,6 +379,7 @@ int  DMLockFile(vfile_p vfilep,char * vfilelockpath)
 	ret=xrename(vfileoldpath ,vfilenewpath);
 	//strcpy(vfilep->path, vfilelockpath );	
 	vfilep->lock=1;
+	g_vfilelist.locknum++;
 	printf("DMLockFile %s  lock %d \n",vfilep->name,ret);
 	//update earliest vfile
 }
@@ -425,14 +473,66 @@ int DMGetEariestFile(vfilelist_p vfilelistp)
 	return -1;//not found : all the file was lock  
 }
 
-int DMAddVfile(vfilelist_p vfilelistp,vfile_p vfilep)
+//add vedio file to the list tail
+//bug 1:if newest pos was null 
+int DMAddvFile(vfilelist_p vfilelistp,vfile_p vfilep)
 {
+
+	printf("DMAddvFile\n");
 	if (vfilep==NULL)return -1;
-	vfilelistp->vfilenewest->next_vfile=vfilep;
+	if(NULL==vfilelistp->vfilenewest)return -1;//avoid newest pos should not be NULL(means the list have not init)
+	vfilep->next_vfile=NULL;
 	vfilep->pre_vfile=vfilelistp->vfilenewest;
+	vfilelistp->vfilenewest->next_vfile=vfilep;
 	vfilelistp->vfilenewest=vfilep;
 	vfilelistp->num++;
+	if(1==vfilep->lock)
+	{
+		printf("DMAddvFile locking file in a wrong way \n");
+		vfilelistp->locknum++;
+	}
+	else if(vfilelistp->lockflag)
+	{
+		DMLockvFile(vfilep,VideoLockPath);
+		if((vfilep->pre_vfile!=vfilelistp->vfilehead))
+		DMLockvFile(vfilep->pre_vfile,VideoLockPath);
+	}
 }
+
+//filename is full name with path
+int DMAddFile(const char *filename)
+{
+	int i;
+	int len;
+	
+	vfile_p vfileptmp;
+	if(NULL==filename)return -1;//filename null 
+	len=strlen(filename);
+	if(!len)return -1;//filename is empty
+	for(i=0;i<len;i++)
+	{
+		if('/'==filename[len-1-i])
+			break;
+	}
+	printf("filename len is %d\n",i);
+	if(0==i)return -1;//only a path name
+	vfileptmp=(vfile_p)malloc(sizeof(vfile_t)*1);
+	
+	memset(vfileptmp->path,'\0',PATHSIZE);
+	memset(vfileptmp->name,'\0',NAMESIZE);
+	strncpy(vfileptmp->path,filename,len-i);
+	strncpy(vfileptmp->name,&filename[len-i],i);
+	vfileptmp->id=DMatoi(vfileptmp->name);
+	printf("DMAddFile name is %s path is %s\n",vfileptmp->name,vfileptmp->path);
+	DMAddvFile(&g_vfilelist,vfileptmp);
+	//sync
+	//runshellcmd("sync");
+	//echo 3 > /proc/sys/vm/drop_caches
+	//runshellcmd("echo 3 > /proc/sys/vm/drop_caches");
+	return 0;
+}
+
+
 
 int DMGetLockVfile(vfilelist_p vfilelistp)
 {
@@ -453,6 +553,7 @@ int DMReAllocateFileList(vfilelist_p vfilelistp)
 		vfilelistp->vfilepos=vfilelistp->vfileArr[i];
 		printf("DMReAllocateFileList  vfilepos %d is   %s  vfileArr[%d] is %s \n",i,vfilelistp->vfilepos->name,i,vfilelistp->vfileArr[i]->name);
 	}
+	vfilelistp->vfilepos->next_vfile=NULL;//bug,will return from end if without this step
 }
 
 //test ok
@@ -478,47 +579,33 @@ int DMGetFileList(char *path,char * lockpath ,vfilelist_p vfilelistp)
 		vfileptmp = (vfile_p)malloc(sizeof(vfile_t)*1);
 		memcpy(vfileptmp->path,path,PATHSIZE);
 		memcpy(vfileptmp->name,ptr->d_name,NAMESIZE);
-
-
+		vfileptmp->lock=lockpathflag;
+		vfileptmp->id = DMatoi(&(vfileptmp->name[4]));//start from month
 		
-		vfileptmp->id = atoi(&(vfileptmp->name[4]));
-		
-		vfilelistp->vfilepos->next_vfile=vfileptmp;
-		vfileptmp->pre_vfile=vfilelistp->vfilepos;
-		vfilelistp->vfilepos=vfileptmp;
+		DMAddvFile(vfilelistp,vfileptmp);
 		printf("filename :%s/%s list num is  %d  file ID is %d\n",path , ptr->d_name , vfilelistp->num,vfileptmp->id);//create_list(list_head, ptr->d_name, 0, 0);
-		
-		if(lockpathflag) 
-		{
-			vfileptmp->lock = 1;
-		}
-		else
-		{
-			vfileptmp->lock = 0;
-		}
-		
+
 				
-		vfilelistp->num++;
 	  
         }
         else if(ptr->d_type == 10)    ///link file
             printf("link file name:%s/%s\n",path,ptr->d_name);
         else if(ptr->d_type == 4)      ///dir
         {
-        		printf("dir file name:%s/%s\n",path,ptr->d_name);
-            memset(base,'\0',sizeof(base));
-            strcpy(base,path);
-            strcat(base,"/");
-            strcat(base,ptr->d_name);
-			if (!strcmp(ptr->d_name,lockpath))
-			{
-				lockpathflag=1;
-			}
-			
-			
-			printf("going into dir %s  num is %d vfilep addr is  %s  \n ",ptr->d_name, vfilelistp->num,vfilelistp->vfilepos->name);
-            DMGetFileList(base, lockpath ,vfilelistp);
-			printf("return from dir %s num is %d vfilep addr is  %s  \n",ptr->d_name, vfilelistp->num,vfilelistp->vfilepos->name);
+		printf("dir file name:%s/%s\n",path,ptr->d_name);
+		memset(base,'\0',sizeof(base));
+		strcpy(base,path);
+		strcat(base,"/");
+		strcat(base,ptr->d_name);
+		if (!strcmp(ptr->d_name,lockpath))
+		{
+			lockpathflag=1;
+		}
+
+
+		printf("going into dir %s  num is %d vfilep addr is  %s  \n ",ptr->d_name, vfilelistp->num,vfilelistp->vfilepos->name);
+		DMGetFileList(base, lockpath ,vfilelistp);
+		printf("return from dir %s num is %d vfilep addr is  %s  \n",ptr->d_name, vfilelistp->num,vfilelistp->vfilepos->name);
         }
     }
 	lockpathflag=0;
@@ -553,14 +640,6 @@ int DMCreatevFileArr(vfile_t ***  vfileArr,vfile_p vfileHead , int num)
 }
 
 
-//test ok
-int runshellcmd(void)
-{
-	int ret;
-	ret=system("df -hm|awk '{print $3}'>~/test");
-	//printf("df -hm|grep sda |awk '{print $1 \"    \"$3}'>~/test");
-	printf("\n");
-}
 
 /*
 int GetConfig(void)
@@ -599,19 +678,50 @@ int DMCheckDisk(void)
 	int size,i,ret;
 	char buf[CapBufSize];
 	FILE *stream;
+	char cmdBuf[128];
 
+	//get total disk size
 	memset(buf,'\0',sizeof(buf));	
-	stream=popen("df |grep mmcblk2p1 |awk '{print $4}' ","r");
-
-
-	ret=fread(buf,sizeof(char),sizeof(buf),stream);
-	//if(ret!=1)
-	//printf("file read error\n");
-	//size=987;
-	size=atoi(buf);
-	printf("the disk size is %d KB\n",size);
+	memset(cmdBuf,'\0',sizeof(buf));
+#if _NFS_
+	sprintf(cmdBuf,"df |grep %s |awk '{print $1}' ",VideoDevice);//for nfs
+#else
+	sprintf(cmdBuf,"df |grep %s |awk '{print $2}' ",VideoDevice);
+#endif
+	printf("DMCheckDisk cmdline is %s\n",cmdBuf);
+	stream=popen(cmdBuf,"r");//
+	if(NULL==stream)
+	{
+		printf("DMCheckDisk popen err\n");
+		return -1;
+	}
+	ret=fread(buf,sizeof(char),sizeof(buf),stream);	
+	size=DMatoi(buf);
+	g_vfilelist.DiskTotal=size/1024;//translate to MB directly to avoid thread change
+	printf("the disk size total is %d KB\n",size);
 	fclose(stream);
 
+	//get available disk size
+	memset(buf,'\0',sizeof(buf));	
+	memset(cmdBuf,'\0',sizeof(buf));
+#if _NFS_
+	sprintf(cmdBuf,"df |grep %s |awk '{print $3}' ",VideoDevice);//for nfs
+#else
+	sprintf(cmdBuf,"df |grep %s |awk '{print $4}' ",VideoDevice);
+#endif
+	printf("DMCheckDisk cmdline is %s\n",cmdBuf);
+	stream=popen(cmdBuf,"r");
+	
+	if(NULL==stream)
+	{
+		printf("DMCheckDisk popen err\n");
+		return -1;
+	}
+	ret=fread(buf,sizeof(char),sizeof(buf),stream);
+	size=DMatoi(buf);
+	g_vfilelist.DiskAvailable=size/1024;//translate to MB directly to avoid thread change
+	printf("the disk Available size is %d KB\n",size);
+	fclose(stream);
 	if(size>AllocateSize)
 	{
 		printf("the capacity is enough!\n");
@@ -622,6 +732,7 @@ int DMCheckDisk(void)
 		printf("allocating more space!\n");
 		ret = -1;
 	}	
+	
 	return ret;
 }
 
@@ -663,17 +774,52 @@ int DMdiskwatch(char* dev,char * path,char * lock)
 //extern
 int DMCreateID(int date , int channel , vfilelist_p vfilelistp)
 {
+	int tmpid,min_i;
+	char min_s[20];
 	printf("DMCreateID\n");
 	DMGetTime(vfilelistp);
+	/*
+	if(NULL!=vfilelistp->vfilenewest)
+	{
+		tmpid=DMatoi(vfilelistp->CurID+4);
+		if(tmpid>vfilelistp->vfilenewest->id)
+		{
+			printf("ID is correct\n");
+		}
+		else
+		{
+			tmpid=vfilelistp->vfilenewest->id+1;
+			itoa(vfilelistp->vfilenewest->id,min_s,10);
+			printf("itoa by newest->id is :%s",min_s);
+			itoa(tmpid,min_s,10);
+			printf("itoa by tmpid is :%s",min_s);
+			strncpy(vfilelistp->CurID,vfilelistp->vfilenewest->name,10);
+			min_i=DMatoi(vfilelistp->vfilenewest->name+10);
+			min_i++;
+			itoa(min_i,min_s);
+			strcat(vfilelistp->CurID,min_s);
+			printf("ID is error, set to %s \n",vfilelistp->CurID);
+		}
+	}*/
 	return DMAllocateDisk();
 
+}
+char *chname[]={"_F","_R","_B","_L"};
+
+//channel is :0 1 2 3
+int DMCreateFile(char *buf,int channel)
+{
+	if(NULL==buf)return -1;
+	if(DMCreateID(0,0,&g_vfilelist))return -1;
+	sprintf(buf,"%s/%s%s.mp4",VideoPath,g_vfilelist.CurID,chname[channel]);
+	return 0;
 }
 
 //record the video file in the vfile list
 //extern
 int DMfclose(vfilelist_p vfilelistp,vfile_p vfilep)
 {
-	DMAddVfile(vfilelistp,vfilep);
+	DMAddvFile(vfilelistp,vfilep);
 	DMAllocateDisk();
 }
 
@@ -691,7 +837,7 @@ int DMDelEariestFiles(vfilelist_p vfilelistp)
 		//tmpvfilep=vfilelistp->vfileoldest->next_vfile;
 		//if(vfilelistp->)
 		
-		printf("delete id is %d",vfilelistp->vfileoldest->id);
+		printf("delete id is %d\n",vfilelistp->vfileoldest->id);
 		DMDeletevFile(vfilelistp->vfileoldest);
 		vfilelistp->num--;
 		if(DMGetEariestFile(vfilelistp))
@@ -715,14 +861,74 @@ int DMAllocateDisk(void)
 
 }
 
-int DMCheckByName(char *name)
+//may be multi call
+int DMLockFile(const char * filename)
 {
+	vfile_p tmpvfile;
+	tmpvfile=DMSearch(&g_vfilelist,filename);
+	if(tmpvfile==NULL)return -1;
+	DMLockvFile(tmpvfile,VideoLockPath);
+	return 0;
+	
+}
+int DMunLockFile(const char * filename)
+{
+	vfile_p tmpvfile;
+	tmpvfile=DMSearch(&g_vfilelist,filename);
+	if(tmpvfile==NULL)return -1;
+	DMunLockvFile(tmpvfile,VideoPath);
+	return 0;
+
+}
+int DMDelFile(const char * filename)
+{
+	int ret;
+	vfile_p tmpvfile;
+	printf("DMDelFile strat\n");
+	tmpvfile=DMSearch(&g_vfilelist,filename);
+	if(tmpvfile==NULL)return -1;
+	ret=DMDeletevFile(tmpvfile);
+		printf("DMDeletevFile return is %d\n",ret);
+	if(!ret)//del no err
+	g_vfilelist.num--;//if file not exist delete it
+	printf("DMDelFile done\n");
+	return 0;
+}
+//given a file name without path
+int DMGetFullName(char *name)
+{
+	vfile_p tmpvfile;
+	tmpvfile=DMSearch(&g_vfilelist,name);
+	if(tmpvfile==NULL)
+		return -1;//file not exist
+	sprintf(name,"%s/%s",tmpvfile->path,tmpvfile->name);//replace, need err check ?
+	printf("DMGetFullName is %s\n",name);
+	return 0;
+
+}
+
+int DMCheckByName(const char *name)
+{
+	if(DMSearch(&g_vfilelist,name)==NULL)
+	return  -1;
 	return 0;
 }
 
+int DMGetAvailable(void)
+{
+	return g_vfilelist.DiskAvailable;
+
+}
+int DMGetTotal(void)
+{
+	return g_vfilelist.DiskTotal;
+}
+
+//should not use for DMReadlist ending decide
 int DMOpenList(void)
 {
 	g_vfilelist.vfilereadpos=g_vfilelist.vfilehead->next_vfile;
+	printf("DMOpenList Done, g.num = %d \n",(g_vfilelist.num-1));
 	return (g_vfilelist.num-1);
 }
 
@@ -730,14 +936,36 @@ int DMOpenList(void)
 int DMReadList( char * buf)
 {
 	if(buf==NULL)
+	{
+		printf("DMReadList buf giver err\n");
 		return -1;//buf should not be null
+	}
 	if(g_vfilelist.vfilereadpos==NULL)
-		return -1;
-	strcpy(buf,g_vfilelist.vfilereadpos->name);
+	{
+		printf("DMReadList vfilereadpos null\n");
+		return -1;//list end
+	}
+	strncpy(buf,g_vfilelist.vfilereadpos->name, NAMESIZE);
+	
+	printf("DMReadList filename is :%s\n",buf);
+	g_vfilelist.vfilereadpos=g_vfilelist.vfilereadpos->next_vfile;
 	return 0;
 }
 
 
+int DMPrintList(vfilelist_p vfilelistp)
+{	
+	int i;
+	vfile_p vfileptmp;
+	vfileptmp=vfilelistp->vfilehead;
+	printf("DMPrintList file num is %d \n",vfilelistp->num-1);
+	for(i=0;i<vfilelistp->num-1;i++)
+	{
+		vfileptmp=vfileptmp->next_vfile;
+		printf("DMPrintList %d file is:%s/%s\n",i,vfileptmp->path,vfileptmp->name);
+	}
+	printf("DMPrintList end address  is %d \n",(int)vfileptmp->next_vfile);
+}
 
 int DMDataInit(void)
 {
@@ -746,17 +974,18 @@ int DMDataInit(void)
 	g_vfilelist.num=1;
 	g_vfilelist.status=0;
 	g_vfilelist.vfileArr=NULL;
-	g_vfilelist.vfilepos=&g_vfile_head;
 	g_vfile_head.id=0;
 	g_vfile_head.next_vfile=NULL;
 	g_vfile_head.pre_vfile=NULL;
 	//g_vfilelist.vfileArr=(vfile_p)malloc(sizeof(vfile_t)*g_vfilelist.num);
+	g_vfilelist.vfilepos=&g_vfile_head;
 	g_vfilelist.vfilehead=&g_vfile_head;
+	g_vfilelist.vfilereadpos=&g_vfile_head;
+	g_vfilelist.vfilenewest=&g_vfile_head;
+	g_vfilelist.vfileoldest=&g_vfile_head;
 	strcpy(g_vfilelist.lockpath,VideoLockPath);
 	strcpy(g_vfilelist.path,VideoLockPath);
 	lockpathflag=0;
-	printf("the vfile_t size is %d\n",sizeof(vfile_t));
-
 }
 
 //extern for disk manager start
@@ -764,6 +993,9 @@ int DMDataInit(void)
 int DMInit(void)
 {
 	int ret;
+	char buf[NAMESIZE+PATHSIZE];
+	
+	printf("DMInit start\n");
 	DMDataInit();
 	
 	ret =DMGetFileList(VideoPath , VideoLockPath ,  &g_vfilelist );
@@ -786,10 +1018,17 @@ int DMInit(void)
 		printf("the oldest file id is :%d  \n",g_vfilelist.vfileoldest->id);
 		DMGetNewestFile(&g_vfilelist);
 		printf("the newest file id is :%d  \n",g_vfilelist.vfilenewest->id);
-		printf("DMInit success\n");
 		
 	}
+	DMCheckDisk();
 	//DMFreeVfileArr(&g_vfilelist);
+	printf("DMReadlist ending test\n");
+	DMOpenList();
+	while(!DMReadList(buf))//bug,will return from end
+	{
+	}	
+	printf("DMReadlist ending address is %d\n",(int)g_vfilelist.vfilereadpos);
+	printf("DMInit success\n");
 	
 }
 
@@ -801,11 +1040,39 @@ int DMMain(int *argc,char ** argv)
 {
 	int ret,i;
 	vfile_p tmpvfilep;
-
-	testsort();
-
+	char fullname[50];
+	
+	char buf[NAMESIZE+PATHSIZE];
+	//testsort();
+	strcpy(fullname,"197001010165_F.h264");
 	DMInit();
-	DMCreateID(0,0,&g_vfilelist);
+	//DMCreateID(0,0,&g_vfilelist);
+	DMPrintList(&g_vfilelist);
+	DMGetFullName(fullname);
+	printf("DMGetFullName return is:%s\n",fullname);
+
+	DMCreateFile( buf,1);
+	printf("after DMCreateFile buf name is :%s\n",buf);
+	tmpvfilep = (vfile_p)malloc(sizeof(vfile_t)*1);
+	memcpy(tmpvfilep->path,"/DVR/OUTPUT",PATHSIZE);
+	memcpy(tmpvfilep->name,"197005060102_B.mp4",NAMESIZE);
+	tmpvfilep->lock=1;
+	tmpvfilep->id = DMatoi(&(tmpvfilep->name[4]));//start from month
+	
+	DMAddvFile(&g_vfilelist,tmpvfilep);
+
+
+	printf("DMReadlist ending test\n");
+	DMOpenList();
+	while(!DMReadList(buf))//bug,will return from end
+	{
+	}
+	
+	printf("DMReadlist ending address is %d\n",(int)g_vfilelist.vfilereadpos);
+	
+	DMPrintList(&g_vfilelist);
+	DMDelFile("197001010101_F.mp4");
+	DMDelFile("197001010101_F.mp4");
 #if  0
 	dmsetenv();
 	dmprintenv();
